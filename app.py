@@ -51,7 +51,7 @@ with col1:
     if selected_image:
         try:
             img = Image.open(selected_image)
-            st.image(img, use_container_width=True, caption=selected_image.name)
+            st.image(img, width='stretch', caption=selected_image.name)
         except Exception:
             st.write(":heart: image preview not available")
     else:

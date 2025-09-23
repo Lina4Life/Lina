@@ -142,7 +142,6 @@ __pycache__/
 For_Lina_note.pdf
 *.log
 .DS_Store
-/.github/
 venv.bak/
 
 # Spyder project settings
