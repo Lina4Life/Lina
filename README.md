@@ -33,3 +33,17 @@ Notes:
 
 - The workflow uses Python 3.12. Adjust if needed.
 - The `Procfile` instructs Heroku to run Streamlit.
+
+## Deploy to Streamlit Community Cloud (recommended for Streamlit apps)
+
+Streamlit Community Cloud provides a simple way to deploy Streamlit apps directly from a GitHub repository. Steps:
+
+1. Go to https://share.streamlit.io and sign in with your GitHub account.
+2. Click "New app" and select this repository (`Lina4Life/Lina`).
+3. Choose the `main` branch and `app.py` as the main file.
+4. Click "Deploy". Streamlit will build the app using `requirements.txt`.
+5. To enable automatic deploys on each push, enable "Auto deploy" in the app settings on Streamlit Cloud.
+
+Notes:
+- You do not need to add secrets for Streamlit Cloud for basic deployments. If you later integrate third-party services (APIs, keys), add them in the Streamlit Cloud Secrets manager.
+- Streamlit Cloud is free for public repositories (with limits) and is the simplest deployment option for Streamlit apps.
