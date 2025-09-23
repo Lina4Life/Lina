@@ -135,13 +135,14 @@ celerybeat.pid
 *.sage.py
 
 # Environments
+.venv/
+__pycache__/
+*.pyc
 .env
-.envrc
-.venv
-env/
-venv/
-ENV/
-env.bak/
+For_Lina_note.pdf
+*.log
+.DS_Store
+/.github/
 venv.bak/
 
 # Spyder project settings
