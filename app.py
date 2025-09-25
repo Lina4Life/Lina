@@ -455,7 +455,14 @@ with tab[2]:
     sender = st.selectbox('Send as', ['Youssef', 'Lina'])
     recipient = 'Lina' if sender == 'Youssef' else 'Youssef'
 
-    msg_text = st.text_area('Message', height=100)
+    # If a previous send requested the composer be cleared, do it before creating the widget
+    if st.session_state.pop('clear_composer', False):
+        # Safe to assign because the widget hasn't been created yet on this run
+        st.session_state['composer_text'] = ''
+
+    # Ensure composer state exists so we can reference it
+    st.session_state.setdefault('composer_text', '')
+    msg_text = st.text_area('Message', height=100, key='composer_text')
     if st.button('Send') and msg_text.strip():
         entry = {
             'from': sender,
@@ -464,41 +471,45 @@ with tab[2]:
             'time': datetime.datetime.utcnow().isoformat(),
             'read': False
         }
+        # append to session and persist
         st.session_state.messages.append(entry)
         add_message(entry)
         if entry['to'] == 'Youssef':
             st.session_state.unread += 1
+        # Request the composer to be cleared on the next rerun to avoid modifying a widget-backed key
+        st.session_state['clear_composer'] = True
         st.success('Message sent')
 
     st.markdown('---')
 
-    # Show unread count
+    # Show unread count and chat zone
+    st.markdown("<div style='max-height:360px; overflow:auto; padding:8px; border-radius:12px; background:linear-gradient(180deg,#fff,#fff6f8)'>", unsafe_allow_html=True)
     if st.session_state.unread:
         st.info(f'Youssef has {st.session_state.unread} unread message(s)')
 
-        # List messages (render as chat bubbles)
-        msgs = list(reversed(st.session_state.messages))  # newest first
-        for i, m in enumerate(msgs):
-                sender_name = m.get('from', '')
-                is_me = (sender_name == 'Youssef')
-                side_class = 'message-right' if is_me else 'message-left'
-                # friendly timestamp
-                try:
-                        ts = datetime.datetime.fromisoformat(m.get('time'))
-                        ts_str = ts.strftime('%b %d %H:%M')
-                except Exception:
-                        ts_str = m.get('time', '')
-
-                avatar = '💖' if sender_name.lower().startswith('l') else '💌'
-                html = f"""
-                <div class='message-row'>
-                    <div class='message-bubble {side_class}'>
-                        <div class='meta-row'><span class='avatar'>{avatar}</span><span class='meta-name'>{sender_name}</span><span class='meta-time'>&nbsp;{ts_str}</span></div>
-                        <div class='body'>{m.get('text','')}</div>
-                    </div>
-                </div>
-                """
-                st.markdown(html, unsafe_allow_html=True)
+    # List messages (render as chat bubbles) - always visible in chat zone (newest at bottom)
+    msgs = st.session_state.messages[:]  # oldest -> newest
+    for m in msgs:
+        sender_name = m.get('from', '')
+        is_me = (sender_name == 'Youssef')
+        side_class = 'message-right' if is_me else 'message-left'
+        # friendly timestamp
+        try:
+            ts = datetime.datetime.fromisoformat(m.get('time'))
+            ts_str = ts.strftime('%b %d %H:%M')
+        except Exception:
+            ts_str = m.get('time', '')
+        avatar = '💖' if sender_name.lower().startswith('l') else '💌'
+        html = f"""
+        <div class='message-row'>
+          <div class='message-bubble {side_class}'>
+            <div class='meta-row'><span class='avatar'>{avatar}</span><span class='meta-name'>{sender_name}</span><span class='meta-time'>&nbsp;{ts_str}</span></div>
+            <div class='body'>{m.get('text','')}</div>
+          </div>
+        </div>
+        """
+        st.markdown(html, unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # Mark messages as read button
     if st.button('Mark all as read'):

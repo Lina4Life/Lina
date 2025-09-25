@@ -138,10 +138,6 @@ celerybeat.pid
 .venv/
 __pycache__/
 *.pyc
-*.zip
-*.db
-messages.json
-*.pyc
 .env
 For_Lina_note.pdf
 *.log
