@@ -114,7 +114,11 @@ if not st.session_state.get('auth_user'):
         if users and users.get(username) == password:
             st.session_state['auth_user'] = username
             st.success(f'Logged in as {username}')
-            st.experimental_rerun()
+            try:
+                st.experimental_rerun()
+            except Exception:
+                # Some Streamlit deployments may not allow rerun; continue gracefully
+                pass
         else:
             st.error('Invalid username or password')
     # Prevent rest of the app from rendering until logged in
@@ -124,7 +128,10 @@ if not st.session_state.get('auth_user'):
 with st.sidebar:
     if st.button('Logout'):
         st.session_state['auth_user'] = None
-        st.experimental_rerun()
+        try:
+            st.experimental_rerun()
+        except Exception:
+            pass
 
 # Top tabs (Play, Journal, Map removed)
 tab = st.tabs(["Home", "Messages", "Songs", "Letters", "Countdowns", "Private"])
@@ -694,7 +701,10 @@ with tab[2]:
                         pass
                     meta.pop(fname, None)
                     save_songs_meta(meta)
-                    st.experimental_rerun()
+                    try:
+                        st.experimental_rerun()
+                    except Exception:
+                        pass
 
     st.markdown('---')
 
@@ -807,7 +817,10 @@ with tab[4]:
                     items.pop(idx)
                     save_counts(items)
                     st.success('Countdown removed')
-                    st.experimental_rerun()
+                    try:
+                        st.experimental_rerun()
+                    except Exception:
+                        pass
                 except Exception:
                     st.error('Could not remove countdown')
 
