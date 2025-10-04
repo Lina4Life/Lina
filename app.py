@@ -2,9 +2,15 @@ import streamlit as st
 from pathlib import Path
 from PIL import Image
 import io
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-from reportlab.lib.units import mm
+import random
+# reportlab is optional — not all environments have it installed
+HAVE_REPORTLAB = True
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.units import mm
+except Exception:
+    HAVE_REPORTLAB = False
 import json
 import datetime
 import os
@@ -60,8 +66,68 @@ st.markdown("<h1>For Lina <span class='heart-decor'>❤️</span></h1>", unsafe_
 st.markdown("<h3 style='color:#b71c46'>My beautiful cutie pie <span class='heart-decor'>💞</span></h3>", unsafe_allow_html=True)
 st.markdown("</div>", unsafe_allow_html=True)
 
-# Top tabs
-tab = st.tabs(["Home", "Play", "Messages", "Songs", "Journal", "Map", "Letters", "Countdowns", "Private"])
+# Top tabs (Play, Journal, Map removed)
+# Users / Forced login
+USERS_FILE = Path('users.json')
+
+def load_users():
+    if USERS_FILE.exists():
+        try:
+            return json.loads(USERS_FILE.read_text(encoding='utf-8'))
+        except Exception:
+            return {}
+    return {}
+
+
+def save_users(d: dict):
+    try:
+        USERS_FILE.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding='utf-8')
+    except Exception:
+        pass
+
+
+def init_users_if_missing():
+    # create a simple users.json with two accounts if it does not exist
+    if not USERS_FILE.exists():
+        defaults = {"Youssef": "youssef123", "Lina": "lina123"}
+        save_users(defaults)
+
+
+init_users_if_missing()
+users = load_users()
+
+# Simple forced-login: if not authenticated, show a login screen and stop further rendering
+if 'auth_user' not in st.session_state:
+    st.session_state['auth_user'] = None
+
+if not st.session_state.get('auth_user'):
+    st.markdown("<div style='text-align:center; margin-top:16px'>", unsafe_allow_html=True)
+    st.markdown("<h2>Login required</h2>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+    # Show usernames from users.json so the user can pick one (makes it easy to test)
+    if users:
+        username = st.selectbox('Username', list(users.keys()), key='login_user')
+    else:
+        username = st.text_input('Username', key='login_user')
+    password = st.text_input('Password', type='password', key='login_pwd')
+    if st.button('Login'):
+        if users and users.get(username) == password:
+            st.session_state['auth_user'] = username
+            st.success(f'Logged in as {username}')
+            st.experimental_rerun()
+        else:
+            st.error('Invalid username or password')
+    # Prevent rest of the app from rendering until logged in
+    st.stop()
+
+# Provide a persistent logout control in the sidebar
+with st.sidebar:
+    if st.button('Logout'):
+        st.session_state['auth_user'] = None
+        st.experimental_rerun()
+
+# Top tabs (Play, Journal, Map removed)
+tab = st.tabs(["Home", "Messages", "Songs", "Letters", "Countdowns", "Private"])
 
 # Messages storage
 MESSAGES_FILE = Path("messages.json")
@@ -139,13 +205,17 @@ def add_message(msg):
         pass
 
 
-def mark_all_read():
+def mark_all_read(recipient=None):
+    # Mark all messages as read for the given recipient (defaults to current auth user)
+    recipient = recipient or st.session_state.get('auth_user')
+    if not recipient:
+        return
     if STORAGE == 'sqlite':
         if not DB_FILE.exists():
             return
         conn = sqlite3.connect(str(DB_FILE))
         c = conn.cursor()
-        c.execute("UPDATE messages SET read = 1 WHERE recipient = ? AND read = 0", ('You',))
+        c.execute("UPDATE messages SET read = 1 WHERE recipient = ? AND read = 0", (recipient,))
         conn.commit()
         conn.close()
         return
@@ -159,7 +229,7 @@ def mark_all_read():
             msgs = []
     changed = False
     for m in msgs:
-        if m.get('to') == 'You' and not m.get('read'):
+        if m.get('to') == recipient and not m.get('read'):
             m['read'] = True
             changed = True
     if changed:
@@ -247,7 +317,8 @@ def notify_webhook(entry):
 if 'messages' not in st.session_state:
     st.session_state.messages = load_messages()
 if 'unread' not in st.session_state:
-    st.session_state.unread = sum(1 for m in st.session_state.messages if (m.get('to') == 'You' and not m.get('read', False)))
+    current_user = st.session_state.get('auth_user')
+    st.session_state.unread = sum(1 for m in st.session_state.messages if (m.get('to') == current_user and not m.get('read', False))) if current_user else 0
 if 'ttt_board' not in st.session_state:
     st.session_state.ttt_board = [""] * 9
     st.session_state.ttt_turn = 'X'
@@ -288,6 +359,56 @@ with tab[0]:
         st.write("I made this little page to remind you how much you're loved — today and always.")
         st.markdown("</div>", unsafe_allow_html=True)
 
+    # Poems carousel (reads from poems/ folder) — show a random poem on first load
+    POEMS_DIR = Path('poems')
+    poems = []
+    if POEMS_DIR.exists():
+        for p in sorted(POEMS_DIR.iterdir()):
+            if p.suffix.lower() in ['.txt', '.md']:
+                try:
+                    poems.append({'type':'text', 'path':p, 'title':p.stem, 'body': p.read_text(encoding='utf-8')})
+                except Exception:
+                    continue
+            elif p.suffix.lower() in ['.png', '.jpg', '.jpeg']:
+                poems.append({'type':'image', 'path':p, 'title':p.stem})
+
+    if poems:
+        # initialize index
+        if 'poem_index' not in st.session_state:
+            st.session_state.poem_index = random.randrange(len(poems))
+
+        st.markdown('<hr>', unsafe_allow_html=True)
+        st.markdown("<h3 style='margin-top:8px'>Today\'s poem</h3>", unsafe_allow_html=True)
+
+        cols = st.columns([1,3,1])
+        with cols[0]:
+            if st.button('Prev'):
+                st.session_state.poem_index = (st.session_state.poem_index - 1) % len(poems)
+        with cols[2]:
+            if st.button('Next'):
+                st.session_state.poem_index = (st.session_state.poem_index + 1) % len(poems)
+
+        # select box to jump
+        titles = [f"{i+1}. {p['title']}" for i,p in enumerate(poems)]
+        pick = st.selectbox('Pick a poem', titles, index=st.session_state.poem_index, key='poem_pick')
+        # sync index if changed via selectbox
+        if pick and pick != titles[st.session_state.poem_index]:
+            try:
+                st.session_state.poem_index = titles.index(pick)
+            except Exception:
+                pass
+
+        cur = poems[st.session_state.poem_index]
+        st.markdown(f"**{cur.get('title','Poem')}**")
+        if cur['type'] == 'text':
+            st.write(cur.get('body',''))
+        else:
+            try:
+                st.image(str(cur['path']), use_column_width=True)
+            except Exception:
+                st.write('[image]')
+
+
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("---")
@@ -304,155 +425,69 @@ with tab[0]:
         custom_message = st.text_area('Customize the note for Lina', value="Lina, you are my sunshine. I love you.")
         sender_name = st.text_input("Sender name", value="From, your love")
 
-        def create_pdf(message: str, sender: str) -> bytes:
-            buffer = io.BytesIO()
-            c = canvas.Canvas(buffer, pagesize=A4)
-            width, height = A4
+        if HAVE_REPORTLAB:
+            def create_pdf(message: str, sender: str) -> bytes:
+                buffer = io.BytesIO()
+                c = canvas.Canvas(buffer, pagesize=A4)
+                width, height = A4
 
-            # Draw a soft red border
-            c.setStrokeColorRGB(0.85, 0.18, 0.35)
-            c.setLineWidth(4)
-            margin = 15 * mm
-            c.rect(margin, margin, width - 2*margin, height - 2*margin)
+                # Draw a soft red border
+                c.setStrokeColorRGB(0.85, 0.18, 0.35)
+                c.setLineWidth(4)
+                margin = 15 * mm
+                c.rect(margin, margin, width - 2*margin, height - 2*margin)
 
-            # Title
-            c.setFont('Helvetica-Bold', 28)
-            c.setFillColorRGB(0.82, 0.11, 0.35)
-            c.drawCentredString(width/2, height - 50*mm, 'For Lina')
+                # Title
+                c.setFont('Helvetica-Bold', 28)
+                c.setFillColorRGB(0.82, 0.11, 0.35)
+                c.drawCentredString(width/2, height - 50*mm, 'For Lina')
 
-            # Message
-            textobject = c.beginText()
-            textobject.setTextOrigin(30*mm, height - 80*mm)
-            textobject.setFont('Times-Roman', 14)
-            textobject.setFillColorRGB(0.3, 0, 0.05)
-            for line in message.split('\n'):
-                textobject.textLine(line)
-            c.drawText(textobject)
+                # Message
+                textobject = c.beginText()
+                textobject.setTextOrigin(30*mm, height - 80*mm)
+                textobject.setFont('Times-Roman', 14)
+                textobject.setFillColorRGB(0.3, 0, 0.05)
+                for line in message.split('\n'):
+                    textobject.textLine(line)
+                c.drawText(textobject)
 
-            # Sender
-            c.setFont('Times-Italic', 12)
-            c.drawRightString(width - 30*mm, 30*mm, sender)
+                # Sender
+                c.setFont('Times-Italic', 12)
+                c.drawRightString(width - 30*mm, 30*mm, sender)
 
-            c.showPage()
-            c.save()
-            buffer.seek(0)
-            return buffer.read()
+                c.showPage()
+                c.save()
+                buffer.seek(0)
+                return buffer.read()
 
-        if st.button('Generate & download PDF'):
-            pdf_bytes = create_pdf(custom_message, sender_name)
-            st.download_button('Download love note (PDF)', data=pdf_bytes, file_name='For_Lina_note.pdf', mime='application/pdf')
-
-# --------------------------
-# Play tab: mini-games + ideas
-# --------------------------
-with tab[1]:
-    st.markdown("<h2 style='text-align:center;'>Play together</h2>", unsafe_allow_html=True)
-    st.write("Choose a mini-game to play together:")
-
-    game = st.selectbox("Mini-game", ["Tic-Tac-Toe", "Rock-Paper-Scissors", "Guess a Number (co-op)"])
-
-    # Tic-Tac-Toe
-    if game == "Tic-Tac-Toe":
-        st.write("Two-player Tic-Tac-Toe. Click a cell to place X/O.")
-        board = st.session_state.ttt_board
-        winner = st.session_state.ttt_winner
-
-        cols = st.columns(3)
-        for i in range(3):
-            for j in range(3):
-                idx = i*3 + j
-                label = board[idx] if board[idx] else ""
-                if cols[j].button(label or " ", key=f"cell_{idx}") and not winner:
-                    if not board[idx]:
-                        board[idx] = st.session_state.ttt_turn
-                        # toggle
-                        st.session_state.ttt_turn = 'O' if st.session_state.ttt_turn == 'X' else 'X'
-                        # check winner
-                        wins = [(0,1,2),(3,4,5),(6,7,8),(0,3,6),(1,4,7),(2,5,8),(0,4,8),(2,4,6)]
-                        for a,b,c in wins:
-                            if board[a] and board[a] == board[b] == board[c]:
-                                st.session_state.ttt_winner = board[a]
-                                break
-                        if all(board) and not st.session_state.ttt_winner:
-                            st.session_state.ttt_winner = 'Draw'
-        if st.session_state.ttt_winner:
-            if st.session_state.ttt_winner == 'Draw':
-                st.info("It's a draw!")
-            else:
-                st.success(f"{st.session_state.ttt_winner} wins!")
-            if st.button('Reset Tic-Tac-Toe'):
-                st.session_state.ttt_board = [""]*9
-                st.session_state.ttt_turn = 'X'
-                st.session_state.ttt_winner = None
-
-    # Rock-Paper-Scissors (two-player on same screen)
-    if game == "Rock-Paper-Scissors":
-        st.write("Two-player RPS: Player 1 picks, then Player 2 picks.")
-        if 'rps_p1' not in st.session_state:
-            st.session_state.rps_p1 = None
-            st.session_state.rps_p2 = None
-        p1 = st.selectbox("Player 1 pick", ["", "Rock", "Paper", "Scissors"], key='p1')
-        if st.button('Lock Player 1 pick'):
-            st.session_state.rps_p1 = p1
-        if st.session_state.rps_p1:
-            st.write(f"Player 1 locked: {st.session_state.rps_p1}")
-            p2 = st.selectbox("Player 2 pick", ["", "Rock", "Paper", "Scissors"], key='p2')
-            if st.button('Lock Player 2 pick'):
-                st.session_state.rps_p2 = p2
-            if st.session_state.rps_p2:
-                p1v = st.session_state.rps_p1
-                p2v = st.session_state.rps_p2
-                outcome = None
-                if p1v == p2v:
-                    outcome = 'Draw'
-                elif (p1v, p2v) in [('Rock','Scissors'), ('Scissors','Paper'), ('Paper','Rock')]:
-                    outcome = 'Player 1 wins'
-                else:
-                    outcome = 'Player 2 wins'
-                st.success(outcome)
-                if st.button('Reset RPS'):
-                    st.session_state.rps_p1 = None
-                    st.session_state.rps_p2 = None
-
-    # Guess a Number (co-op)
-    if game == "Guess a Number (co-op)":
-        st.write("One sets a secret number (1-50) and the other guesses with hints")
-        if 'secret' not in st.session_state:
-            st.session_state.secret = None
-        if st.session_state.secret is None:
-            secret = st.number_input('Set secret number (Player A) — keep it private', min_value=1, max_value=50, step=1, key='secret_set')
-            if st.button('Set Secret'):
-                st.session_state.secret = int(secret)
-                st.success('Secret set — now Player B can guess')
+            if st.button('Generate & download PDF'):
+                pdf_bytes = create_pdf(custom_message, sender_name)
+                st.download_button('Download love note (PDF)', data=pdf_bytes, file_name='For_Lina_note.pdf', mime='application/pdf')
         else:
-            guess = st.number_input('Guess the number (Player B)', min_value=1, max_value=50, step=1, key='guess')
-            if st.button('Submit Guess'):
-                if guess == st.session_state.secret:
-                    st.success('Correct!')
-                    st.session_state.secret = None
-                elif guess < st.session_state.secret:
-                    st.info('Higher')
-                else:
-                    st.info('Lower')
+            st.warning(
+                "PDF generation requires the `reportlab` package. You can install it in your virtual environment:\n"
+                "& \".venv\\Scripts\\Activate.ps1\"; pip install reportlab  (PowerShell)\n\n"
+                "If you prefer not to install it, you can download the note as plain text instead."
+            )
+            if st.button('Download note as .txt'):
+                txt_bytes = custom_message.encode('utf-8')
+                st.download_button('Download text note', data=txt_bytes, file_name='For_Lina_note.txt', mime='text/plain')
 
-    st.markdown('---')
-    st.write('More mini-game ideas:')
-    st.write('- Memory matching card game (turn-based)')
-    st.write('- Collaborative drawing (one draws a line each turn)')
-    st.write('- Two-player trivia (take turns asking questions)')
-    st.write('- Word ladder / 20 questions')
+# Play tab removed per user request
 
 # --------------------------
 # Messages tab
 # --------------------------
-with tab[2]:
+with tab[1]:
     st.markdown("<h2 style='text-align:center;'>Messages <span class='heart-decor'>💌</span></h2>", unsafe_allow_html=True)
     st.markdown("<div style='text-align:center; color:#7a1128;'>Send messages to each other — messages are stored locally in this folder as <code>messages.json</code></div>", unsafe_allow_html=True)
     st.markdown('')
 
-    # Sidebar quick controls
-    sender = st.selectbox('Send as', ['Youssef', 'Lina'])
+    # Sidebar quick controls - default to logged-in user
+    current_user = st.session_state.get('auth_user')
+    sender = current_user
     recipient = 'Lina' if sender == 'Youssef' else 'Youssef'
+    st.write(f"Sending as **{sender}**")
 
     # If a previous send requested the composer be cleared, do it before creating the widget
     if st.session_state.pop('clear_composer', False):
@@ -502,8 +537,8 @@ with tab[2]:
         # append to session and persist
         st.session_state.messages.append(entry)
         add_message(entry)
-        if entry['to'] == 'Youssef':
-            st.session_state.unread += 1
+        # recompute unread for current user (messages addressed to them)
+        st.session_state.unread = sum(1 for m in st.session_state.messages if (m.get('to') == current_user and not m.get('read', False)))
         # Request the composer to be cleared on the next rerun to avoid modifying a widget-backed key
         st.session_state['clear_composer'] = True
         # clear uploader state where possible
@@ -518,13 +553,13 @@ with tab[2]:
     # Show unread count and chat zone
     st.markdown("<div style='max-height:360px; overflow:auto; padding:8px; border-radius:12px; background:linear-gradient(180deg,#fff,#fff6f8)'>", unsafe_allow_html=True)
     if st.session_state.unread:
-        st.info(f'Youssef has {st.session_state.unread} unread message(s)')
+        st.info(f'{current_user} has {st.session_state.unread} unread message(s)')
 
     # List messages (render as chat bubbles) - always visible in chat zone (newest at bottom)
     msgs = st.session_state.messages[:]  # oldest -> newest
     for m in msgs:
         sender_name = m.get('from', '')
-        is_me = (sender_name == 'Youssef')
+        is_me = (sender_name == current_user)
         side_class = 'message-right' if is_me else 'message-left'
         # friendly timestamp
         try:
@@ -557,11 +592,11 @@ with tab[2]:
     if st.button('Mark all as read'):
         changed = False
         for m in st.session_state.messages:
-            if m.get('to') == 'Youssef' and not m.get('read'):
+            if m.get('to') == current_user and not m.get('read'):
                 m['read'] = True
                 changed = True
         if changed:
-            mark_all_read()
+            mark_all_read(current_user)
             st.session_state.unread = 0
             st.success('Marked as read')
 
@@ -588,11 +623,12 @@ def save_songs_meta(meta: dict):
     except Exception:
         pass
 
-with tab[3]:
+with tab[2]:
     st.markdown("<h2 style='text-align:center;'>Songs</h2>", unsafe_allow_html=True)
     st.write("Upload voice recordings or short video recordings (mp3, wav, m4a, ogg, mp4) and play them here.")
 
-    uploader_name = st.selectbox('Upload as', ['Youssef', 'Lina'], key='song_uploader')
+    uploader_name = st.session_state.get('auth_user')
+    st.write(f"Uploading as **{uploader_name}**")
     uploaded = st.file_uploader('Upload recording(s)', type=['mp3', 'wav', 'm4a', 'ogg', 'mp4'], accept_multiple_files=True)
     if uploaded:
         meta = load_songs_meta()
@@ -664,111 +700,9 @@ with tab[3]:
 
 # End
 
-# --------------------------
-# Digital Love Journal
-# --------------------------
-JOURNAL_DIR = Path('journal')
-JOURNAL_DIR.mkdir(exist_ok=True)
-JOURNAL_META = Path('journal.json')
+# Journal removed per user request
 
-def load_journal():
-    if JOURNAL_META.exists():
-        try:
-            return json.loads(JOURNAL_META.read_text(encoding='utf-8'))
-        except Exception:
-            return []
-    return []
-
-def save_journal(items):
-    try:
-        JOURNAL_META.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding='utf-8')
-    except Exception:
-        pass
-
-with tab[4]:
-    st.markdown("<h2 style='text-align:center;'>Digital Love Journal</h2>", unsafe_allow_html=True)
-    st.write('Add timeline entries with photos, short videos, and notes.')
-    title = st.text_input('Title')
-    note = st.text_area('Note')
-    media = st.file_uploader('Add photo/video (optional)', type=['png','jpg','jpeg','mp4','mov','webm'], key='journal_media')
-    if st.button('Add entry'):
-        items = load_journal()
-        ts = datetime.datetime.utcnow().isoformat()
-        fname = None
-        if media:
-            safe = f"{datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{media.name}"
-            (JOURNAL_DIR / safe).write_bytes(media.read())
-            fname = str(JOURNAL_DIR / safe)
-        items.append({'title': title, 'note': note, 'media': fname, 'time': ts})
-        save_journal(items)
-        st.success('Entry added')
-    st.markdown('---')
-    items = load_journal()
-    if not items:
-        st.info('No journal entries yet.')
-    else:
-        for it in sorted(items, key=lambda x: x.get('time',''), reverse=True):
-            st.markdown(f"**{it.get('title','')}** — {it.get('time')}")
-            st.write(it.get('note',''))
-            if it.get('media'):
-                p = Path(it.get('media'))
-                if p.exists():
-                    if p.suffix.lower() in ['.mp4','.mov','.webm']:
-                        st.video(str(p))
-                    else:
-                        st.image(str(p))
-            st.markdown('---')
-
-# --------------------------
-# Virtual Memory Map
-# --------------------------
-MAP_META = Path('map.json')
-
-def load_map():
-    if MAP_META.exists():
-        try:
-            return json.loads(MAP_META.read_text(encoding='utf-8'))
-        except Exception:
-            return []
-    return []
-
-def save_map(items):
-    try:
-        MAP_META.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding='utf-8')
-    except Exception:
-        pass
-
-with tab[5]:
-    st.markdown("<h2 style='text-align:center;'>Virtual Memory Map</h2>", unsafe_allow_html=True)
-    st.write('Pin places you visited together and add a short memory or photo.')
-    place = st.text_input('Place name (city, spot)')
-    coords = st.text_input('Coordinates (lat,lon) — optional')
-    note = st.text_area('Memory / story')
-    photo = st.file_uploader('Photo (optional)', type=['png','jpg','jpeg'], key='map_photo')
-    if st.button('Add pin'):
-        items = load_map()
-        fname = None
-        if photo:
-            safe = f"{datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{photo.name}"
-            (Path('map_media') / safe).parent.mkdir(exist_ok=True)
-            (Path('map_media') / safe).write_bytes(photo.read())
-            fname = str(Path('map_media') / safe)
-        items.append({'place': place, 'coords': coords, 'note': note, 'photo': fname, 'time': datetime.datetime.utcnow().isoformat()})
-        save_map(items)
-        st.success('Pin added')
-    st.markdown('---')
-    items = load_map()
-    if not items:
-        st.info('No map pins yet.')
-    else:
-        for it in items:
-            st.markdown(f"**{it.get('place')}** — {it.get('time')}")
-            st.write(it.get('note',''))
-            if it.get('photo') and Path(it.get('photo')).exists():
-                st.image(it.get('photo'))
-            if it.get('coords'):
-                st.write(f"Coordinates: {it.get('coords')}")
-            st.markdown('---')
+# Map removed per user request
 
 # --------------------------
 # Love Letters Archive
@@ -789,7 +723,7 @@ def save_letters(items):
     except Exception:
         pass
 
-with tab[6]:
+with tab[3]:
     st.markdown("<h2 style='text-align:center;'>Love Letters Archive</h2>", unsafe_allow_html=True)
     st.write('Write letters and choose when they unlock (daily, weekly, specific date).')
     letter_text = st.text_area('Letter text')
@@ -845,7 +779,7 @@ def save_counts(items):
     except Exception:
         pass
 
-with tab[7]:
+with tab[4]:
     st.markdown("<h2 style='text-align:center;'>Countdowns</h2>", unsafe_allow_html=True)
     name = st.text_input('Event name')
     date = st.date_input('Date')
@@ -856,13 +790,26 @@ with tab[7]:
         st.success('Countdown added')
     st.markdown('---')
     items = load_counts()
-    for it in items:
-        try:
-            d = datetime.date.fromisoformat(it.get('date'))
-            delta = d - datetime.date.today()
-            st.write(f"{it.get('name')}: {delta.days} days")
-        except Exception:
-            st.write(it)
+    # Render list with delete buttons
+    if not items:
+        st.info('No countdowns yet.')
+    else:
+        for idx, it in enumerate(items):
+            try:
+                d = datetime.date.fromisoformat(it.get('date'))
+                delta = d - datetime.date.today()
+                st.write(f"{it.get('name')}: {delta.days} days")
+            except Exception:
+                st.write(it)
+            # provide a delete button per countdown
+            if st.button(f'Delete_{idx}', key=f'delete_count_{idx}'):
+                try:
+                    items.pop(idx)
+                    save_counts(items)
+                    st.success('Countdown removed')
+                    st.experimental_rerun()
+                except Exception:
+                    st.error('Could not remove countdown')
 
 # Hidden Messages section removed per user request. The app no longer contains the treasure-hunt feature.
 
@@ -887,9 +834,8 @@ def save_private(d):
     except Exception:
         pass
 
-with tab[8]:
+with tab[5]:
     st.markdown("<h2 style='text-align:center;'>Private Space 🔒</h2>", unsafe_allow_html=True)
-    st.write('This area can be password-protected for only you two.')
     # basic password protect (local only)
     pri = load_private()
     if 'password' not in pri:

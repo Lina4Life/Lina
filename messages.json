@@ -25,7 +25,7 @@
     "to": "Youssef",
     "text": "hi",
     "time": "2025-09-25T14:03:36.299749",
-    "read": false
+    "read": true
   },
   {
     "from": "Youssef",
@@ -74,7 +74,7 @@
     "to": "Youssef",
     "text": "hi",
     "time": "2025-09-25T16:58:25.624497",
-    "read": false
+    "read": true
   },
   {
     "from": "Youssef",
@@ -93,5 +93,37 @@
     "images": [
       "20250925180601_Good morning my queen.png"
     ]
+  },
+  {
+    "from": "Youssef",
+    "to": "Lina",
+    "text": "hi",
+    "time": "2025-10-04T20:52:05.037663",
+    "read": false,
+    "images": []
+  },
+  {
+    "from": "Lina",
+    "to": "Youssef",
+    "text": "hello",
+    "time": "2025-10-04T20:52:21.038320",
+    "read": true,
+    "images": []
+  },
+  {
+    "from": "Youssef",
+    "to": "Lina",
+    "text": "hi",
+    "time": "2025-10-04T21:30:29.117639",
+    "read": false,
+    "images": []
+  },
+  {
+    "from": "Lina",
+    "to": "Youssef",
+    "text": "hii",
+    "time": "2025-10-04T21:31:41.316331",
+    "read": true,
+    "images": []
   }
 ]
