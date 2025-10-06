@@ -2,6 +2,8 @@ import streamlit as st
 from pathlib import Path
 from PIL import Image
 import io
+import sqlite3 as _sqlite3
+import streamlit.components.v1 as components
 import random
 # reportlab is optional — not all environments have it installed
 HAVE_REPORTLAB = True
@@ -651,21 +653,51 @@ with tab[1]:
 # --------------------------
 SONGS_DIR = Path('songs')
 SONGS_DIR.mkdir(exist_ok=True)
-SONGS_META = Path('songs.json')
+SONGS_DB = Path('songs.db')
 
-def load_songs_meta():
-    if SONGS_META.exists():
-        try:
-            return json.loads(SONGS_META.read_text(encoding='utf-8'))
-        except Exception:
-            return {}
-    return {}
+def init_songs_db():
+    conn = _sqlite3.connect(str(SONGS_DB))
+    c = conn.cursor()
+    c.execute(
+        '''CREATE TABLE IF NOT EXISTS songs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT UNIQUE,
+            orig_name TEXT,
+            uploader TEXT,
+            time TEXT
+        )'''
+    )
+    conn.commit()
+    conn.close()
 
-def save_songs_meta(meta: dict):
+def add_song_record(filename, orig_name, uploader):
+    init_songs_db()
+    conn = _sqlite3.connect(str(SONGS_DB))
+    c = conn.cursor()
     try:
-        SONGS_META.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
+        c.execute('INSERT OR REPLACE INTO songs (filename, orig_name, uploader, time) VALUES (?, ?, ?, ?)',
+                  (filename, orig_name, uploader, datetime.datetime.utcnow().isoformat()))
+        conn.commit()
     except Exception:
         pass
+    conn.close()
+
+def list_songs():
+    init_songs_db()
+    conn = _sqlite3.connect(str(SONGS_DB))
+    c = conn.cursor()
+    c.execute('SELECT filename, orig_name, uploader, time FROM songs ORDER BY time DESC')
+    rows = c.fetchall()
+    conn.close()
+    return [{'filename': r[0], 'orig_name': r[1], 'uploader': r[2], 'time': r[3]} for r in rows]
+
+def delete_song_record(filename):
+    init_songs_db()
+    conn = _sqlite3.connect(str(SONGS_DB))
+    c = conn.cursor()
+    c.execute('DELETE FROM songs WHERE filename = ?', (filename,))
+    conn.commit()
+    conn.close()
 
 with tab[2]:
     st.markdown("<h2 style='text-align:center;'>Songs</h2>", unsafe_allow_html=True)
@@ -675,7 +707,6 @@ with tab[2]:
     st.write(f"Uploading as **{uploader_name}**")
     uploaded = st.file_uploader('Upload recording(s)', type=['mp3', 'wav', 'm4a', 'ogg', 'mp4'], accept_multiple_files=True)
     if uploaded:
-        meta = load_songs_meta()
         for f in uploaded:
             try:
                 data = f.read()
@@ -683,30 +714,23 @@ with tab[2]:
                 safe_name = f"{ts}_{f.name}"
                 dest = SONGS_DIR / safe_name
                 dest.write_bytes(data)
-                meta[safe_name] = {
-                    'orig_name': f.name,
-                    'uploader': uploader_name,
-                    'time': datetime.datetime.utcnow().isoformat()
-                }
+                add_song_record(safe_name, f.name, uploader_name)
                 st.success(f"Uploaded {f.name}")
             except Exception as e:
                 st.error(f"Failed to save {f.name}: {e}")
-        save_songs_meta(meta)
 
     st.markdown('---')
 
-    # List available songs
-    meta = load_songs_meta()
-    if not meta:
+    # List available songs (from DB)
+    items = list_songs()
+    if not items:
         st.info('No songs uploaded yet — use the uploader above to add recordings.')
     else:
-        # sort by time desc
-        items = sorted(meta.items(), key=lambda kv: kv[1].get('time',''), reverse=True)
-        for i, (fname, info) in enumerate(items):
+        for i, info in enumerate(items):
             col1, col2 = st.columns([6,1])
             with col1:
                 st.markdown(f"**{info.get('orig_name')}** — uploaded by *{info.get('uploader')}* on {info.get('time')}")
-                audio_path = SONGS_DIR / fname
+                audio_path = SONGS_DIR / info.get('filename')
                 if audio_path.exists():
                     try:
                         suffix = audio_path.suffix.lower()
@@ -736,8 +760,7 @@ with tab[2]:
                             audio_path.unlink()
                     except Exception:
                         pass
-                    meta.pop(fname, None)
-                    save_songs_meta(meta)
+                    delete_song_record(info.get('filename'))
                     try:
                         st.experimental_rerun()
                     except Exception:
