@@ -484,7 +484,7 @@ with tab[0]:
 
     if st.button('Show balloons 🎈'):
         st.balloons()
-        st.success("I hope this made you smile, Lina! ❤️")
+        st.success("I hope this made you smile my love ❤️❤️❤️")
 
     st.markdown('---')
 
@@ -1183,7 +1183,7 @@ with tab[2]:
 
 # Call tab (simple embedded Jitsi)
 with tab[3]:
-    st.markdown("<h2 style='text-align:center;'>Call & Screen Share 📞</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align:center;'>Call & Screen Share</h2>", unsafe_allow_html=True)
     st.write("Start a private Jitsi Meet room to call Lina and share your screen. Screen sharing works in modern browsers.")
     # room name generator
     default_room = f'lina_call_{datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S")}'
