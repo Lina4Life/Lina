@@ -13,6 +13,31 @@ import base64
 import hashlib
 import hmac
 
+# set Streamlit page title and icon
+try:
+    st.set_page_config(page_title="For my Wife <3 <3 <3", page_icon="❤️")
+except Exception:
+    pass
+
+# Ensure the browser can find the manifest and theme color for PWA install flows
+try:
+        components.html("""
+        <script>
+        (function(){
+            try{
+                if(!document.querySelector('link[rel="manifest"]')){
+                    const l = document.createElement('link'); l.rel='manifest'; l.href='/static/manifest.json'; document.head.appendChild(l);
+                }
+                if(!document.querySelector('meta[name="theme-color"]')){
+                    const m = document.createElement('meta'); m.name='theme-color'; m.content='#b30f3d'; document.head.appendChild(m);
+                }
+            }catch(e){console.error(e)}
+        })();
+        </script>
+        """, height=0)
+except Exception:
+        pass
+
 # reportlab is optional — not all environments have it installed
 HAVE_REPORTLAB = True
 try:
@@ -61,12 +86,16 @@ if not st.session_state.get('auth_user'):
     st.markdown("<div style='text-align:center; margin-top:16px'>", unsafe_allow_html=True)
     st.markdown("<h2>Login required</h2>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
-    # Show usernames from users.json so the user can pick one (makes it easy to test)
-    if users:
-        username = st.selectbox('Username', list(users.keys()), key='login_user')
-    else:
-        username = st.text_input('Username', key='login_user')
-    password = st.text_input('Password', type='password', key='login_pwd')
+
+    # Use a form for login to ensure single submission behavior
+    with st.form('login_form'):
+        if users:
+            username = st.selectbox('Username', list(users.keys()), key='login_user')
+        else:
+            username = st.text_input('Username', key='login_user')
+        password = st.text_input('Password', type='password', key='login_pwd')
+        submitted = st.form_submit_button('Login')
+
     def verify_password(password: str, stored: str) -> bool:
         try:
             if not isinstance(stored, str):
@@ -84,7 +113,7 @@ if not st.session_state.get('auth_user'):
         except Exception:
             return False
 
-    if st.button('Login'):
+    if submitted:
         stored = users.get(username) if users else None
         ok = False
         if stored:
@@ -98,12 +127,13 @@ if not st.session_state.get('auth_user'):
             try:
                 st.experimental_rerun()
             except Exception:
-                # Some Streamlit deployments may not allow rerun; continue gracefully
                 pass
         else:
             st.error('Invalid username or password')
+
     # Prevent rest of the app from rendering until logged in
-    st.stop()
+    if not st.session_state.get('auth_user'):
+        st.stop()
 
 # Provide a persistent logout control in the sidebar
 with st.sidebar:
@@ -115,7 +145,7 @@ with st.sidebar:
             pass
 
 # Top tabs (Play, Journal, Map removed)
-tab = st.tabs(["Home", "Messages", "Songs", "Call", "Letters", "Countdowns", "Private", "Feeling"])
+tab = st.tabs(["Home", "Messages", "Songs", "Call", "Letters", "Countdowns", "Notifications", "Feeling"])
 
 # Messages storage
 MESSAGES_FILE = Path("messages.json")
@@ -239,6 +269,57 @@ def find_message_index_by_time(msgs, time_str):
         if m.get('time') == time_str:
             return idx
     return None
+
+
+def edit_message_by_time(time_str, new_text):
+    msgs = []
+    if MESSAGES_FILE.exists():
+        try:
+            msgs = json.loads(MESSAGES_FILE.read_text(encoding='utf-8'))
+        except Exception:
+            msgs = []
+    idx = find_message_index_by_time(msgs, time_str)
+    if idx is None:
+        return False
+    msgs[idx]['text'] = new_text
+    save_messages_file(msgs)
+    st.session_state.messages = load_messages()
+    return True
+
+
+def delete_message_by_time(time_str):
+    msgs = []
+    if MESSAGES_FILE.exists():
+        try:
+            msgs = json.loads(MESSAGES_FILE.read_text(encoding='utf-8'))
+        except Exception:
+            msgs = []
+    idx = find_message_index_by_time(msgs, time_str)
+    if idx is None:
+        return False
+    msgs.pop(idx)
+    save_messages_file(msgs)
+    st.session_state.messages = load_messages()
+    return True
+
+
+def add_reaction_by_time(time_str, emoji, by):
+    msgs = []
+    if MESSAGES_FILE.exists():
+        try:
+            msgs = json.loads(MESSAGES_FILE.read_text(encoding='utf-8'))
+        except Exception:
+            msgs = []
+    idx = find_message_index_by_time(msgs, time_str)
+    if idx is None:
+        return False
+    msg = msgs[idx]
+    reactions = msg.get('reactions', [])
+    reactions.append({'by': by, 'emoji': emoji, 'time': datetime.datetime.utcnow().isoformat()})
+    msgs[idx]['reactions'] = reactions
+    save_messages_file(msgs)
+    st.session_state.messages = load_messages()
+    return True
 
 
 def add_reply(parent_time, reply_msg):
@@ -468,7 +549,6 @@ with tab[0]:
 # --------------------------
 with tab[1]:
     st.markdown("<h2 style='text-align:center;'>Messages <span class='heart-decor'>💌</span></h2>", unsafe_allow_html=True)
-    st.markdown("<div style='text-align:center; color:#7a1128;'>Send messages to each other — messages are stored locally in this folder as <code>messages.json</code></div>", unsafe_allow_html=True)
 
     current_user = st.session_state.get('auth_user')
     st.write(f"Sending as **{current_user}**")
@@ -511,59 +591,61 @@ with tab[1]:
         for i, e in enumerate(emojis):
             if cols[i].button(e, key=f'emoji_{i}'):
                 st.session_state['composer_text'] = st.session_state.get('composer_text', '') + e
-
+        # Composer UI below emojis (outside the emoji button loop)
         st.write('Attach image(s) (optional)')
-        img_upload = st.file_uploader('', type=['png','jpg','jpeg','gif'], accept_multiple_files=True, key=f'msg_images_{composer_pos}')
-        msg_text = st.text_area('Message', height=120, key='composer_text')
+        with st.form(f'composer_form_{composer_pos}'):
+            img_upload = st.file_uploader('', type=['png','jpg','jpeg','gif'], accept_multiple_files=True, key=f'msg_images_{composer_pos}')
+            msg_text = st.text_area('Message', height=120, key='composer_text')
 
-        # Voice input: inject a small Web Speech API control (browser must support it)
-        try:
-            js_html = """
-            <div style='margin-top:8px; margin-bottom:8px; text-align:left;'>
-              <button id='start_rec' style='padding:8px;border-radius:8px;'>Start voice</button>
-              <button id='stop_rec' style='padding:8px;border-radius:8px;margin-left:6px;'>Stop</button>
-              <label style='margin-left:12px; font-size:13px; color:#6a1330;'>Transcription will appear in the message box.</label>
-              <script>
-                (function(){
-                  const start = document.getElementById('start_rec');
-                  const stop = document.getElementById('stop_rec');
-                  let recognition = null;
-                  if('webkitSpeechRecognition' in window || 'SpeechRecognition' in window){
-                    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-                    recognition = new SR();
-                    recognition.lang = 'en-US';
-                    recognition.interimResults = true;
-                    recognition.continuous = true;
-                    recognition.onresult = function(e){
-                      let interim = '';
-                      let final = '';
-                      for(let i=e.resultIndex;i<e.results.length;i++){
-                        if(e.results[i].isFinal) final += e.results[i][0].transcript;
-                        else interim += e.results[i][0].transcript;
+            # Voice input: inject a small Web Speech API control (browser must support it)
+            try:
+                js_html = """
+                <div style='margin-top:8px; margin-bottom:8px; text-align:left;'>
+                  <button id='start_rec' style='padding:8px;border-radius:8px;'>Start voice</button>
+                  <button id='stop_rec' style='padding:8px;border-radius:8px;margin-left:6px;'>Stop</button>
+                  <label style='margin-left:12px; font-size:13px; color:#6a1330;'>Transcription will appear in the message box.</label>
+                  <script>
+                    (function(){
+                      const start = document.getElementById('start_rec');
+                      const stop = document.getElementById('stop_rec');
+                      let recognition = null;
+                      if('webkitSpeechRecognition' in window || 'SpeechRecognition' in window){
+                        const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+                        recognition = new SR();
+                        recognition.lang = 'en-US';
+                        recognition.interimResults = true;
+                        recognition.continuous = true;
+                        recognition.onresult = function(e){
+                          let interim = '';
+                          let final = '';
+                          for(let i=e.resultIndex;i<e.results.length;i++){
+                            if(e.results[i].isFinal) final += e.results[i][0].transcript;
+                            else interim += e.results[i][0].transcript;
+                          }
+                          // find textarea by placeholder or name
+                          const ta = Array.from(document.querySelectorAll('textarea')).find(t=>t.placeholder && t.placeholder.toLowerCase().includes('message')) || document.querySelector('textarea');
+                          if(ta){
+                            ta.value = (ta.value||'') + final + interim;
+                            ta.dispatchEvent(new Event('input', {bubbles:true}));
+                          }
+                        };
+                      } else {
+                        start.disabled = true; stop.disabled = true;
+                        const p = document.createElement('span'); p.innerText=' (Voice not supported in this browser)'; p.style.color='#a00'; start.parentNode.appendChild(p);
                       }
-                      // find textarea by placeholder or name
-                      const ta = Array.from(document.querySelectorAll('textarea')).find(t=>t.placeholder && t.placeholder.toLowerCase().includes('message')) || document.querySelector('textarea');
-                      if(ta){
-                        ta.value = (ta.value||'') + final + interim;
-                        ta.dispatchEvent(new Event('input', {bubbles:true}));
-                      }
-                    };
-                  } else {
-                    start.disabled = true; stop.disabled = true;
-                    const p = document.createElement('span'); p.innerText=' (Voice not supported in this browser)'; p.style.color='#a00'; start.parentNode.appendChild(p);
-                  }
-                  start.addEventListener('click', ()=>{ if(recognition) recognition.start(); start.disabled=true; stop.disabled=false; });
-                  stop.addEventListener('click', ()=>{ if(recognition) recognition.stop(); start.disabled=false; stop.disabled=true; });
-                })();
-              </script>
-            </div>
-            """
-            components.html(js_html, height=90)
-        except Exception:
-            pass
+                      start.addEventListener('click', ()=>{ if(recognition) recognition.start(); start.disabled=true; stop.disabled=false; });
+                      stop.addEventListener('click', ()=>{ if(recognition) recognition.stop(); start.disabled=false; stop.disabled=true; });
+                    })();
+                  </script>
+                </div>
+                """
+                components.html(js_html, height=90)
+            except Exception:
+                pass
 
-        # Send handler
-        if st.button('Send', key=f'send_btn_{composer_pos}') and (msg_text.strip() or (img_upload and len(img_upload) > 0)):
+            submitted = st.form_submit_button('Send')
+
+        if submitted and (msg_text.strip() or (img_upload and len(img_upload) > 0)):
             recipient = 'Lina' if current_user == 'Youssef' else 'Youssef'
             entry = {
                 'from': current_user,
@@ -581,6 +663,21 @@ with tab[1]:
 
             st.session_state.messages.append(entry)
             add_message(entry)
+            # Try to notify push server so subscribed devices receive a background notification
+            try:
+                def send_push_trigger(recipient, message_text):
+                    import requests
+                    try:
+                        requests.post('http://localhost:5001/push', json={'message': f'New message for {recipient}: {message_text}'}, timeout=2)
+                    except Exception:
+                        pass
+                try:
+                    # fire-and-forget
+                    send_push_trigger(entry.get('to'), entry.get('text'))
+                except Exception:
+                    pass
+            except Exception:
+                pass
             # recompute unread
             st.session_state.unread = sum(1 for m in st.session_state.messages if (m.get('to') == current_user and not m.get('read', False)))
             st.session_state['clear_composer'] = True
@@ -642,6 +739,45 @@ with tab[1]:
     """
     st.markdown(chat_css + "<div class='chat-container'>", unsafe_allow_html=True)
 
+    # If the URL contains msg_time & action=menu, show a small message action UI (Edit/Delete/React)
+    params = st.experimental_get_query_params()
+    selected_msg_time = params.get('msg_time', [None])[0]
+    selected_action = params.get('action', [None])[0]
+    if selected_msg_time and selected_action == 'menu':
+        # show actions container
+        with st.container():
+            st.markdown('### Message actions')
+            st.write(f'Message time: {selected_msg_time}')
+            col1, col2, col3 = st.columns([1,1,1])
+            with col1:
+                if st.button('Edit', key=f'edit_btn_{selected_msg_time}'):
+                    # show edit box
+                    idx = find_message_index_by_time(st.session_state.messages, selected_msg_time)
+                    orig = ''
+                    if idx is not None:
+                        orig = st.session_state.messages[idx].get('text','')
+                    new_text = st.text_area('Edit message', value=orig, key=f'edit_area_{selected_msg_time}')
+                    if st.button('Save', key=f'save_{selected_msg_time}'):
+                        if edit_message_by_time(selected_msg_time, new_text):
+                            st.success('Message edited')
+                            st.experimental_set_query_params()
+                            st.experimental_rerun()
+            with col2:
+                if st.button('Delete', key=f'del_btn_{selected_msg_time}'):
+                    if delete_message_by_time(selected_msg_time):
+                        st.success('Message deleted')
+                        st.experimental_set_query_params()
+                        st.experimental_rerun()
+            with col3:
+                st.markdown('React:')
+                emojis = ['❤️','😍','😊','😢','😠','👍']
+                for e in emojis:
+                    if st.button(e, key=f'react_{selected_msg_time}_{e}'):
+                        if add_reaction_by_time(selected_msg_time, e, st.session_state.get('auth_user')):
+                            st.success('Reacted')
+                            st.experimental_set_query_params()
+                            st.experimental_rerun()
+
     if st.session_state.get('unread'):
         st.info(f"{current_user} has {st.session_state.get('unread')} unread message(s)")
 
@@ -664,11 +800,15 @@ with tab[1]:
         bubble_class = 'message-bubble message-right' if is_me else 'message-bubble'
 
         # Build the message bubble HTML
+        # Assign an id based on timestamp so JS can refer to it (timestamps should be unique enough here)
+        msg_time_id = m.get('time', '')
+        safe_id = msg_time_id.replace(':','_').replace('.','_') if msg_time_id else f"msg_{random.randint(1000,9999)}"
         html = f"""
-        <div class="{container_class}">
+        <div id="{safe_id}" class="{container_class}">
           <div class="{bubble_class}">
             <div class='meta-row'><span class='avatar'>{avatar}</span><span class='meta-name'>{sender_name}</span><span class='meta-time'>{ts_str}</span></div>
             <div class='body'>{m.get('text','')}</div>
+            <div class='msg-actions' style='float:right; margin-top:6px; font-size:18px; cursor:pointer;' data-msgtime="{msg_time_id}">⋯</div>
         """
 
         # Inline images into the bubble when available
@@ -697,9 +837,73 @@ with tab[1]:
 
         html += "</div></div>"
         st.markdown(html, unsafe_allow_html=True)
+        # render reactions under message (if any)
+        reacts = m.get('reactions', []) or []
+        if reacts:
+            react_html = "<div style='margin-top:6px; font-size:16px; display:flex; gap:8px;'>"
+            for r in reacts:
+                react_html += f"<div title='by {r.get('by')}' style='padding:4px 8px; background:rgba(255,255,255,0.06); border-radius:12px;'>{r.get('emoji')}</div>"
+            react_html += "</div>"
+            st.markdown(react_html, unsafe_allow_html=True)
         # images were inlined into the bubble above; no separate st.image fallback here
 
     st.markdown('</div>', unsafe_allow_html=True)
+
+    # Client JS: wire the per-message '⋯' element, right-click, and long-press to open the action UI
+    try:
+        components.html("""
+        <script>
+        (function(){
+            function openMenuFor(msgtime){
+                try{
+                    const params = new URLSearchParams(window.location.search);
+                    params.set('msg_time', msgtime);
+                    params.set('action', 'menu');
+                    // set and reload to let Streamlit read params and render the action UI
+                    window.location.search = params.toString();
+                }catch(e){console.error(e)}
+            }
+
+            // Click on the three-dots button
+            document.querySelectorAll('.msg-actions').forEach(function(el){
+                el.addEventListener('click', function(ev){
+                    ev.stopPropagation();
+                    const t = el.getAttribute('data-msgtime');
+                    if(t) openMenuFor(t);
+                });
+            });
+
+            // Right-click on a message row (desktop)
+            document.querySelectorAll('.message-row').forEach(function(row){
+                row.addEventListener('contextmenu', function(ev){
+                    ev.preventDefault();
+                    // try to find data-msgtime inside
+                    const btn = row.querySelector('.msg-actions');
+                    const t = btn ? btn.getAttribute('data-msgtime') : null;
+                    if(t) openMenuFor(t);
+                });
+            });
+
+            // Long-press for touch devices
+            let touchTimer = null;
+            document.querySelectorAll('.message-row').forEach(function(row){
+                row.addEventListener('touchstart', function(ev){
+                    if(touchTimer) clearTimeout(touchTimer);
+                    touchTimer = setTimeout(function(){
+                        const btn = row.querySelector('.msg-actions');
+                        const t = btn ? btn.getAttribute('data-msgtime') : null;
+                        if(t) openMenuFor(t);
+                    }, 600);
+                });
+                ['touchend','touchcancel','touchmove'].forEach(function(evName){
+                    row.addEventListener(evName, function(){ if(touchTimer) { clearTimeout(touchTimer); touchTimer = null; } });
+                });
+            });
+        })();
+        </script>
+        """, height=0)
+    except Exception:
+        pass
 
     if composer_pos == 'Bottom':
         st.markdown('---')
@@ -1116,9 +1320,9 @@ with tab[5]:
 # Personalized Horoscope removed per user request.
 
 # --------------------------
-# Private password-protected space
+# Notifications tab
 # --------------------------
-PRIVATE_META = Path('private.json')
+NOTIF_FILE = Path('notifications.json')
 
 # Mad Meter storage
 MAD_FILE = Path('mad_meter.json')
@@ -1137,121 +1341,222 @@ def save_mad(entries):
     except Exception:
         pass
 
-def load_private():
-    if PRIVATE_META.exists():
+# (previous `private` helpers were removed when converting the tab to Notifications)
+def load_notifications():
+    if NOTIF_FILE.exists():
         try:
-            return json.loads(PRIVATE_META.read_text(encoding='utf-8'))
+            return json.loads(NOTIF_FILE.read_text(encoding='utf-8'))
         except Exception:
             return {}
     return {}
 
-def save_private(d):
+
+def save_notifications(d):
     try:
-        PRIVATE_META.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding='utf-8')
+        NOTIF_FILE.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding='utf-8')
     except Exception:
         pass
 
+
 with tab[6]:
-    st.markdown("<h2 style='text-align:center;'>Private Space 🔒</h2>", unsafe_allow_html=True)
-    # basic password protect (local only)
-    pri = load_private()
-    if 'password' not in pri:
-        if st.text_input('Set a password for the private space', type='password'):
-            p = st.session_state.get('text')
-            pri['password'] = p
-            save_private(pri)
-            st.success('Password set')
-    else:
-        entered = st.text_input('Enter password to unlock', type='password')
-        if entered:
-            if entered == pri.get('password'):
-                st.success('Unlocked private space')
-                pm = st.text_area('Write a private note')
-                if st.button('Save private note'):
-                    pri.setdefault('notes',[]).append({'text': pm, 'time': datetime.datetime.utcnow().isoformat()})
-                    save_private(pri)
-                    st.success('Saved')
-                for n in pri.get('notes',[]):
-                    st.markdown(f"- {n.get('time')}: {n.get('text')}")
-            else:
-                st.error('Incorrect password')
+    st.markdown("<h2 style='text-align:center;'>Notifications</h2>", unsafe_allow_html=True)
+    st.markdown("<div style='text-align:center;'>Allow browser notifications so your partner receives alerts when you message them (works while the page is open). For full push support when the app is closed you'd need a push service (server + VAPID) — see notes below.</div>", unsafe_allow_html=True)
+    prefs = load_notifications()
+    user_pref = prefs.get(st.session_state.get('auth_user'), {})
 
-        # --------------------------
-        # Mad Meter tab
-        # --------------------------
-        with tab[7]:
-            st.markdown("<h2 style='text-align:center;'> How do you feel today? </h2>", unsafe_allow_html=True)
-            st.markdown("<div style='text-align:center; color:#7a1128;'>Share how you're feeling and what would help — this helps communicate needs calmly.</div>", unsafe_allow_html=True)
+    st.markdown('### Browser permission')
+    st.markdown('Click the button below to request the browser permission to display notifications. After granting permission, click *Save preference* to persist the setting on this device.')
+    try:
+        components.html("""
+        <script>
+        function askNotificationPermission(){
+            if(!('Notification' in window)){
+                alert('This browser does not support notifications');
+                return;
+            }
+            Notification.requestPermission().then(function(result){
+                alert('Permission: ' + result + '\nNow click Save preference to persist this on the server.');
+            });
+        }
+        </script>
+        <button onclick="askNotificationPermission()">Request browser permission</button>
+        """, height=80)
+    except Exception:
+        pass
 
-            # mood slider: 0 (very mad/red) -> 50 (neutral/yellow) -> 100 (happy/green)
-            mood = st.slider('How are you feeling right now?', min_value=0, max_value=100, value=50, help='0 = very mad (red), 50 = neutral, 100 = happy')
-            # map to color and label
-            if mood <= 20:
-                mood_label = 'Very Mad'
-                mood_color = 'red'
-            elif mood <= 45:
-                mood_label = 'Upset'
-                mood_color = 'orange'
-            elif mood <= 60:
-                mood_label = 'Neutral'
-                mood_color = 'gold'
-            elif mood <= 85:
-                mood_label = 'Okay/Content'
-                mood_color = 'lightgreen'
-            else:
-                mood_label = 'Happy'
-                mood_color = 'green'
+    if st.button('Save preference (I granted permission)'):
+        prefs.setdefault(st.session_state.get('auth_user'), {})['enabled'] = True
+        save_notifications(prefs)
+        st.success('Saved preference')
 
-            st.markdown(f"**Mood:** <span style='color:{mood_color}; font-weight:600;'>{mood_label} ({mood})</span>", unsafe_allow_html=True)
+    if st.button('Disable notifications'):
+        prefs.setdefault(st.session_state.get('auth_user'), {})['enabled'] = False
+        save_notifications(prefs)
+        st.success('Notifications disabled')
 
-            reason = st.text_area('Why do you feel this way?', placeholder='Describe briefly what happened or how you feel')
-            help_actions = st.text_area('What can your partner do to make you feel better?', placeholder='E.g. give me a hug, listen, apologize, give space, do chores, plan a date...')
+    if st.button('Test notification (show now)'):
+        # trigger a small client notification (only appears if permission already granted)
+        try:
+            components.html("""
+            <script>
+            if('Notification' in window && Notification.permission === 'granted'){
+                new Notification('Test from Lina app', { body: 'If you see this, notifications work in this browser.' });
+            } else {
+                alert('Notification permission not yet granted in this browser. Use the Request permission button first.');
+            }
+            </script>
+            """, height=60)
+        except Exception:
+            pass
 
-            # Quick suggestion chips
-            st.markdown('**Quick suggestions**: (click to append)')
-            cols = st.columns(4)
-            suggestions = ['Listen without interrupting', 'A sincere apology', 'Hug/me time', 'Help with chores', 'Plan a date', 'Give me space', 'Bring flowers', 'Write a note']
-            for i, s in enumerate(suggestions):
-                if cols[i % 4].button(s, key=f'sugg_{i}'):
-                    # append suggestion to help_actions
-                    cur = st.session_state.get('mad_help', help_actions or '')
-                    st.session_state['mad_help'] = (cur + '\n' + s).strip()
+    st.markdown('---')
+    st.markdown('### Web Push (service worker)')
+    st.markdown('Register a service worker and subscribe to push notifications (requires a running push server at http://localhost:5001).')
+    try:
+        components.html("""
+        <script>
+        async function registerAndSubscribe(){
+            if(!('serviceWorker' in navigator)){
+                alert('Service workers not supported in this browser'); return;
+            }
+            try{
+                const reg = await navigator.serviceWorker.register('/static/sw.js');
+                console.log('SW registered', reg);
+            }catch(e){ console.error('SW register failed', e); alert('Service worker registration failed'); return; }
 
-            # prefer session value if user clicked quick suggestions
-            help_actions = st.session_state.get('mad_help', help_actions)
+            // fetch VAPID public key
+            let pub = null;
+            try{
+                const r = await fetch('http://localhost:5001/vapid_public');
+                pub = await r.text();
+            }catch(e){ console.error(e); alert('Could not fetch VAPID key from push server'); return; }
 
-            if st.button('Save mood entry'):
-                entries = load_mad()
-                entry = {
-                    'user': st.session_state.get('auth_user'),
-                    'mood': mood,
-                    'label': mood_label,
-                    'reason': reason,
-                    'help_suggested': help_actions,
-                    'time': datetime.datetime.utcnow().isoformat()
+            function urlBase64ToUint8Array(base64String) {
+                const padding = '='.repeat((4 - base64String.length % 4) % 4);
+                const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+                const rawData = window.atob(base64);
+                const outputArray = new Uint8Array(rawData.length);
+                for (let i = 0; i < rawData.length; ++i) {
+                    outputArray[i] = rawData.charCodeAt(i);
                 }
-                entries.append(entry)
-                save_mad(entries)
-                st.success('Saved your mood')
-                try:
-                    st.experimental_rerun()
-                except Exception:
-                    pass
+                return outputArray;
+            }
 
-            st.markdown('---')
-            st.markdown('### Recent Mad Meter entries')
-            history = load_mad()
-            if not history:
-                st.info('No entries yet — be the first to share how you feel')
-            else:
-                for e in reversed(history[-20:]):
-                    who = e.get('user') or 'Unknown'
-                    ts = e.get('time', '')
-                    try:
-                        tsf = datetime.datetime.fromisoformat(ts).strftime('%b %d %H:%M')
-                    except Exception:
-                        tsf = ts
-                    color = 'green' if e.get('mood', 50) > 80 else ('red' if e.get('mood',50) < 30 else 'orange')
-                    st.markdown(f"- **{who}** ({tsf}) — <span style='color:{color}; font-weight:600'>{e.get('label')} ({e.get('mood')})</span><br>Reason: {e.get('reason')}<br>What helps: {e.get('help_suggested')}", unsafe_allow_html=True)
+            try{
+                const reg = await navigator.serviceWorker.ready;
+                const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(pub) });
+                // send subscription to push server
+                await fetch('http://localhost:5001/subscribe', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(sub)});
+                alert('Subscribed to push (saved to push server)');
+            }catch(e){ console.error(e); alert('Push subscription failed: ' + e); }
+        }
+        </script>
+        <button onclick="registerAndSubscribe()">Register Service Worker & Subscribe</button>
+        """, height=120)
+    except Exception:
+        pass
+
+        # Add an Install to Home Screen button (PWA) using beforeinstallprompt
+        try:
+                components.html('''
+                <script>
+                let deferredPrompt;
+                window.addEventListener('beforeinstallprompt', (e) => {
+                    e.preventDefault();
+                    deferredPrompt = e;
+                    const btn = document.getElementById('pwa_install_btn');
+                    if(btn) btn.style.display = 'inline-block';
+                });
+                async function promptInstall(){
+                    if(!deferredPrompt) { alert('PWA install not available'); return; }
+                    deferredPrompt.prompt();
+                    const choice = await deferredPrompt.userChoice;
+                    if(choice.outcome === 'accepted') alert('Thanks for installing!');
+                    deferredPrompt = null;
+                }
+                </script>
+                <button id='pwa_install_btn' style='display:none;' onclick='promptInstall()'>Install app to Home Screen</button>
+                ''', height=90)
+        except Exception:
+                pass
+
+
+
+# --------------------------
+# Mad Meter tab
+# --------------------------
+with tab[7]:
+    st.markdown("<h2 style='text-align:center;'> How do you feel today? </h2>", unsafe_allow_html=True)
+    st.markdown("<div style='text-align:center; color:#7a1128;'>Share how you're feeling and what would help — this helps communicate needs calmly.</div>", unsafe_allow_html=True)
+
+    # mood slider: 0 (very mad/red) -> 50 (neutral/yellow) -> 100 (happy/green)
+    mood = st.slider('How are you feeling right now?', min_value=0, max_value=100, value=50, help='0 = very mad (red), 50 = neutral, 100 = happy')
+    # map to color and label
+    if mood <= 20:
+        mood_label = 'Very Mad'
+        mood_color = 'red'
+    elif mood <= 45:
+        mood_label = 'Upset'
+        mood_color = 'orange'
+    elif mood <= 60:
+        mood_label = 'Neutral'
+        mood_color = 'gold'
+    elif mood <= 85:
+        mood_label = 'Okay/Content'
+        mood_color = 'lightgreen'
+    else:
+        mood_label = 'Happy'
+        mood_color = 'green'
+
+    st.markdown(f"**Mood:** <span style='color:{mood_color}; font-weight:600;'>{mood_label} ({mood})</span>", unsafe_allow_html=True)
+
+    reason = st.text_area('Why do you feel this way?', placeholder='Describe briefly what happened or how you feel')
+    help_actions = st.text_area('What can your partner do to make you feel better?', placeholder='E.g. give me a hug, listen, apologize, give space, do chores, plan a date...')
+    # Quick suggestion chips
+    st.markdown('**Quick suggestions**: (click to append)')
+    cols = st.columns(4)
+    suggestions = ['Listen without interrupting', 'A sincere apology', 'Hug/me time', 'Help with chores', 'Plan a date', 'Give me space', 'Bring flowers', 'Write a note']
+    for i, s in enumerate(suggestions):
+        if cols[i % 4].button(s, key=f'sugg_{i}'):
+            # append suggestion to help_actions
+            cur = st.session_state.get('mad_help', help_actions or '')
+            st.session_state['mad_help'] = (cur + '\n' + s).strip()
+
+    # prefer session value if user clicked quick suggestions
+    help_actions = st.session_state.get('mad_help', help_actions)
+
+    if st.button('Save mood entry'):
+        entries = load_mad()
+        entry = {
+            'user': st.session_state.get('auth_user'),
+            'mood': mood,
+            'label': mood_label,
+            'reason': reason,
+            'help_suggested': help_actions,
+            'time': datetime.datetime.utcnow().isoformat()
+        }
+        entries.append(entry)
+        save_mad(entries)
+        st.success('Saved your mood')
+        try:
+            st.experimental_rerun()
+        except Exception:
+            pass
+
+    st.markdown('---')
+    st.markdown('### Recent Mad Meter entries')
+    history = load_mad()
+    if not history:
+        st.info('No entries yet — be the first to share how you feel')
+    else:
+        for e in reversed(history[-20:]):
+            who = e.get('user') or 'Unknown'
+            ts = e.get('time', '')
+            try:
+                tsf = datetime.datetime.fromisoformat(ts).strftime('%b %d %H:%M')
+            except Exception:
+                tsf = ts
+            color = 'green' if e.get('mood', 50) > 80 else ('red' if e.get('mood',50) < 30 else 'orange')
+            st.markdown(f"- **{who}** ({tsf}) — <span style='color:{color}; font-weight:600'>{e.get('label')} ({e.get('mood')})</span><br>Reason: {e.get('reason')}<br>What helps: {e.get('help_suggested')}", unsafe_allow_html=True)
 
 # End
