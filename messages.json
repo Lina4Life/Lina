@@ -125,5 +125,21 @@
     "time": "2025-10-04T21:31:41.316331",
     "read": true,
     "images": []
+  },
+  {
+    "from": "Youssef",
+    "to": "Lina",
+    "text": "hallo",
+    "time": "2025-10-06T09:15:43.480628",
+    "read": false,
+    "images": []
+  },
+  {
+    "from": "Youssef",
+    "to": "Lina",
+    "text": "hi",
+    "time": "2025-10-06T09:21:03.391622",
+    "read": false,
+    "images": []
   }
 ]

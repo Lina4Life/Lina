@@ -657,6 +657,50 @@ with tab[1]:
         st.markdown('---')
         render_composer()
 
+    # Auto-refresh toggle (client-side) to pick up messages sent from the other user
+    auto_refresh = st.checkbox('Auto-refresh chat (every 8s)', value=True, help='When enabled the page will reload every few seconds to show new messages from the other side')
+    try:
+        auto_flag = 'true' if auto_refresh else 'false'
+        js = """
+        <script>
+        (function() {{
+            // Floating composer: try to find the Send button and pin its container to bottom
+            function pinComposer(){{
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const sendBtn = buttons.find(b => b.innerText && b.innerText.trim().toLowerCase() === 'send');
+                if(!sendBtn) return;
+                let el = sendBtn.closest('[data-testid]') || sendBtn.parentElement;
+                if(!el) el = sendBtn.parentElement;
+                el.style.position = 'fixed';
+                el.style.left = '8px';
+                el.style.right = '8px';
+                el.style.bottom = '8px';
+                el.style.zIndex = '9999';
+                el.style.background = 'rgba(255,255,255,0.96)';
+                el.style.padding = '8px';
+                el.style.borderRadius = '10px';
+                el.style.boxShadow = '0 6px 18px rgba(0,0,0,0.12)';
+            }}
+            // attempt pin a few times (Streamlit renders asynchronously)
+            for(let i=0;i<8;i++) setTimeout(pinComposer, i*500);
+
+            // Auto refresh when enabled
+            const auto = %s;
+            if(auto){
+                setInterval(()=>{
+                    // don't reload if user is typing
+                    const active = document.activeElement;
+                    if(active && (active.tagName==='INPUT' || active.tagName==='TEXTAREA')) return;
+                    window.location.reload();
+                }, 8000);
+            }
+        })();
+        </script>
+        """ % (auto_flag)
+        components.html(js, height=0)
+    except Exception:
+        pass
+
     # Mark read button
     if st.button('Mark all as read'):
         changed = False
