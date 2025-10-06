@@ -586,7 +586,7 @@ with tab[1]:
 
     # composer renderer (can be shown top or bottom)
     def render_composer():
-        emojis = ['❤️','😘','😊','😍','🎶','😭','👍']
+        emojis = ['❤️','👍']
         cols = st.columns(len(emojis))
         for i, e in enumerate(emojis):
             if cols[i].button(e, key=f'emoji_{i}'):
