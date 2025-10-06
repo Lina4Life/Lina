@@ -495,7 +495,8 @@ with tab[1]:
     st.write(f"Sending as **{current_user}**")
 
     # UX options
-    composer_pos = st.selectbox('Composer position', ['Top', 'Bottom'], index=0, help='Show composer at top (newest-first) or bottom (oldest-first)')
+    # Composer is fixed at bottom for easier typing below the chat
+    composer_pos = 'Bottom'
 
     # ensure composer state
     st.session_state.setdefault('composer_text', '')
@@ -566,6 +567,27 @@ with tab[1]:
                 st.experimental_rerun()
             except Exception:
                 pass
+
+    # After rendering messages, auto-scroll the container so newest messages are visible
+    try:
+        if composer_pos == 'Bottom':
+            components.html("""
+            <script>
+            const el = document.querySelector('[data-testid="stMarkdownContainer"] div');
+            // try to find our message container by style marker
+            const msg = document.querySelector('div[style*="max-height:520px"]');
+            if(msg){ msg.scrollTop = msg.scrollHeight; }
+            </script>
+            """, height=0)
+        else:
+            components.html("""
+            <script>
+            const msg = document.querySelector('div[style*="max-height:520px"]');
+            if(msg){ msg.scrollTop = 0; }
+            </script>
+            """, height=0)
+    except Exception:
+        pass
 
     # Render composer at top if selected
     if composer_pos == 'Top':
@@ -706,6 +728,7 @@ with tab[2]:
     uploader_name = st.session_state.get('auth_user')
     st.write(f"Uploading as **{uploader_name}**")
     uploaded = st.file_uploader('Upload recording(s)', type=['mp3', 'wav', 'm4a', 'ogg', 'mp4'], accept_multiple_files=True)
+    cover_upload = st.file_uploader('Optional cover image (PNG/JPG)', type=['png','jpg','jpeg'], accept_multiple_files=False, key='cover_upload')
     if uploaded:
         for f in uploaded:
             try:
@@ -714,6 +737,15 @@ with tab[2]:
                 safe_name = f"{ts}_{f.name}"
                 dest = SONGS_DIR / safe_name
                 dest.write_bytes(data)
+                # save optional cover if provided
+                cover_name = None
+                if cover_upload:
+                    try:
+                        cdata = cover_upload.read()
+                        cover_name = f"cover_{ts}_{cover_upload.name}"
+                        (SONGS_DIR / cover_name).write_bytes(cdata)
+                    except Exception:
+                        cover_name = None
                 add_song_record(safe_name, f.name, uploader_name)
                 st.success(f"Uploaded {f.name}")
             except Exception as e:
@@ -727,33 +759,33 @@ with tab[2]:
         st.info('No songs uploaded yet — use the uploader above to add recordings.')
     else:
         for i, info in enumerate(items):
-            col1, col2 = st.columns([6,1])
-            with col1:
+            card_cols = st.columns([1,4,1])
+            cover_path = None
+            # try to find a cover image in songs dir matching pattern
+            for candidate in SONGS_DIR.iterdir():
+                if candidate.name.startswith(f"cover_") and info.get('filename') in candidate.name:
+                    cover_path = candidate
+                    break
+            with card_cols[1]:
                 st.markdown(f"**{info.get('orig_name')}** — uploaded by *{info.get('uploader')}* on {info.get('time')}")
+                if cover_path and cover_path.exists():
+                    try:
+                        st.image(str(cover_path), width=240)
+                    except Exception:
+                        pass
                 audio_path = SONGS_DIR / info.get('filename')
                 if audio_path.exists():
                     try:
                         suffix = audio_path.suffix.lower()
-                        # Video formats -> use st.video, audio formats -> st.audio
                         if suffix in ['.mp4', '.webm', '.mov']:
-                            try:
-                                st.video(str(audio_path))
-                            except Exception:
-                                st.video(audio_path.read_bytes())
+                            st.video(str(audio_path))
                         else:
-                            try:
-                                st.audio(str(audio_path))
-                            except Exception:
-                                # fallback to bytes
-                                try:
-                                    st.audio(audio_path.read_bytes())
-                                except Exception:
-                                    st.write('Unable to play this file in the browser.')
+                            st.audio(str(audio_path))
                     except Exception:
                         st.write('Unable to play this file in the browser.')
                 else:
                     st.write('File missing on disk')
-            with col2:
+            with card_cols[2]:
                 if st.button(f'Delete_{i}'):
                     try:
                         if audio_path.exists():
