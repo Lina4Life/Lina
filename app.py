@@ -483,92 +483,109 @@ with tab[0]:
 # Play tab removed per user request
 
 # --------------------------
-# Messages tab
+# Messages tab (refactored)
 # --------------------------
 with tab[1]:
     st.markdown("<h2 style='text-align:center;'>Messages <span class='heart-decor'>💌</span></h2>", unsafe_allow_html=True)
     st.markdown("<div style='text-align:center; color:#7a1128;'>Send messages to each other — messages are stored locally in this folder as <code>messages.json</code></div>", unsafe_allow_html=True)
-    st.markdown('')
 
-    # Sidebar quick controls - default to logged-in user
     current_user = st.session_state.get('auth_user')
-    sender = current_user
-    recipient = 'Lina' if sender == 'Youssef' else 'Youssef'
-    st.write(f"Sending as **{sender}**")
+    st.write(f"Sending as **{current_user}**")
 
-    # If a previous send requested the composer be cleared, do it before creating the widget
-    if st.session_state.pop('clear_composer', False):
-        # Safe to assign because the widget hasn't been created yet on this run
-        st.session_state['composer_text'] = ''
+    # UX options
+    composer_pos = st.selectbox('Composer position', ['Top', 'Bottom'], index=0, help='Show composer at top (newest-first) or bottom (oldest-first)')
 
-    # Ensure composer state exists so we can reference it
+    # ensure composer state
     st.session_state.setdefault('composer_text', '')
-    # quick emoji picker
-    emojis = ['❤️','😘','😊','😍','🎶','😭','👍']
-    cols = st.columns(len(emojis))
-    for i, e in enumerate(emojis):
-        if cols[i].button(e, key=f'emoji_{i}'):
-            # append emoji to composer text
-            st.session_state['composer_text'] = st.session_state.get('composer_text', '') + e
 
-    # image attachments
-    st.write('Attach image(s) (optional)')
-    img_upload = st.file_uploader('', type=['png','jpg','jpeg','gif'], accept_multiple_files=True, key='msg_images')
-
-    msg_text = st.text_area('Message', height=100, key='composer_text')
-    if st.button('Send') and (msg_text.strip() or (img_upload and len(img_upload) > 0)):
-        entry = {
-            'from': sender,
-            'to': recipient,
-            'text': msg_text.strip(),
-            'time': datetime.datetime.utcnow().isoformat(),
-            'read': False,
-            'images': []
-        }
-
-        # save attached images to message_media/
+    # helper: save uploaded image + create thumbnail
+    def save_image_and_thumb(uploaded_file):
         MEDIA_DIR = Path('message_media')
         MEDIA_DIR.mkdir(exist_ok=True)
-        if img_upload:
-            for f in img_upload:
-                try:
-                    data = f.read()
-                    ts = datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')
-                    safe_name = f"{ts}_{f.name}"
-                    dest = MEDIA_DIR / safe_name
-                    dest.write_bytes(data)
-                    entry['images'].append(safe_name)
-                except Exception:
-                    pass
-
-        # append to session and persist
-        st.session_state.messages.append(entry)
-        add_message(entry)
-        # recompute unread for current user (messages addressed to them)
-        st.session_state.unread = sum(1 for m in st.session_state.messages if (m.get('to') == current_user and not m.get('read', False)))
-        # Request the composer to be cleared on the next rerun to avoid modifying a widget-backed key
-        st.session_state['clear_composer'] = True
-        # clear uploader state where possible
         try:
-            st.session_state['msg_images'] = None
+            data = uploaded_file.read()
+            ts = datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')
+            safe_name = f"{ts}_{uploaded_file.name}"
+            dest = MEDIA_DIR / safe_name
+            dest.write_bytes(data)
+            # create thumbnail
+            try:
+                img = Image.open(io.BytesIO(data))
+                img.thumbnail((480, 480))
+                thumb_buf = io.BytesIO()
+                img.save(thumb_buf, format='PNG')
+                thumb_name = f"thumb_{safe_name}.png"
+                (MEDIA_DIR / thumb_name).write_bytes(thumb_buf.getvalue())
+            except Exception:
+                thumb_name = None
+            return {'file': safe_name, 'thumb': thumb_name}
         except Exception:
-            pass
-        st.success('Message sent')
+            return None
+
+    # composer renderer (can be shown top or bottom)
+    def render_composer():
+        emojis = ['❤️','😘','😊','😍','🎶','😭','👍']
+        cols = st.columns(len(emojis))
+        for i, e in enumerate(emojis):
+            if cols[i].button(e, key=f'emoji_{i}'):
+                st.session_state['composer_text'] = st.session_state.get('composer_text', '') + e
+
+        st.write('Attach image(s) (optional)')
+        img_upload = st.file_uploader('', type=['png','jpg','jpeg','gif'], accept_multiple_files=True, key=f'msg_images_{composer_pos}')
+        msg_text = st.text_area('Message', height=120, key='composer_text')
+        if st.button('Send', key=f'send_btn_{composer_pos}') and (msg_text.strip() or (img_upload and len(img_upload) > 0)):
+            recipient = 'Lina' if current_user == 'Youssef' else 'Youssef'
+            entry = {
+                'from': current_user,
+                'to': recipient,
+                'text': msg_text.strip(),
+                'time': datetime.datetime.utcnow().isoformat(),
+                'read': False,
+                'images': []
+            }
+            if img_upload:
+                for f in img_upload:
+                    saved = save_image_and_thumb(f)
+                    if saved:
+                        entry['images'].append(saved)
+
+            st.session_state.messages.append(entry)
+            add_message(entry)
+            # recompute unread
+            st.session_state.unread = sum(1 for m in st.session_state.messages if (m.get('to') == current_user and not m.get('read', False)))
+            st.session_state['clear_composer'] = True
+            try:
+                st.session_state[f'msg_images_{composer_pos}'] = None
+            except Exception:
+                pass
+            st.success('Message sent')
+            # auto-refresh to show message at once (best-effort)
+            try:
+                st.experimental_rerun()
+            except Exception:
+                pass
+
+    # Render composer at top if selected
+    if composer_pos == 'Top':
+        render_composer()
 
     st.markdown('---')
 
-    # Show unread count and chat zone
-    st.markdown("<div style='max-height:360px; overflow:auto; padding:8px; border-radius:12px; background:linear-gradient(180deg,#fff,#fff6f8)'>", unsafe_allow_html=True)
-    if st.session_state.unread:
-        st.info(f'{current_user} has {st.session_state.unread} unread message(s)')
+    # Messages container
+    st.markdown("<div style='max-height:520px; overflow:auto; padding:8px; border-radius:12px; background:linear-gradient(180deg,#fff,#fff6f8)'>", unsafe_allow_html=True)
 
-    # List messages (render as chat bubbles) - always visible in chat zone (newest at bottom)
-    msgs = st.session_state.messages[:]  # oldest -> newest
+    if st.session_state.get('unread'):
+        st.info(f"{current_user} has {st.session_state.get('unread')} unread message(s)")
+
+    msgs = st.session_state.messages[:]  # copy
+    # Decide order: newest-first if composer at top (so new messages are visible without scrolling)
+    if composer_pos == 'Top':
+        msgs = list(reversed(msgs))
+
     for m in msgs:
         sender_name = m.get('from', '')
         is_me = (sender_name == current_user)
         side_class = 'message-right' if is_me else 'message-left'
-        # friendly timestamp
         try:
             ts = datetime.datetime.fromisoformat(m.get('time'))
             ts_str = ts.strftime('%b %d %H:%M')
@@ -584,18 +601,39 @@ with tab[1]:
         </div>
         """
         st.markdown(html, unsafe_allow_html=True)
-        # render any attached images for this message (saved in message_media/)
         try:
             imgs = m.get('images', []) or []
             for im in imgs:
-                p = Path('message_media') / im
-                if p.exists():
-                    st.image(str(p), width=240)
+                # support both old string format and new dict format
+                if isinstance(im, str):
+                    p = Path('message_media') / im
+                    thumb = Path('message_media') / f"thumb_{im}.png"
+                else:
+                    p = Path('message_media') / im.get('file')
+                    thumb = Path('message_media') / (im.get('thumb') or f"thumb_{im.get('file')}.png")
+                if thumb.exists():
+                    try:
+                        st.image(thumb.read_bytes(), width=360)
+                    except Exception:
+                        try:
+                            st.image(p.read_bytes(), width=360)
+                        except Exception:
+                            pass
+                elif p.exists():
+                    try:
+                        st.image(p.read_bytes(), width=360)
+                    except Exception:
+                        pass
         except Exception:
             pass
-    st.markdown("</div>", unsafe_allow_html=True)
 
-    # Mark messages as read button
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    if composer_pos == 'Bottom':
+        st.markdown('---')
+        render_composer()
+
+    # Mark read button
     if st.button('Mark all as read'):
         changed = False
         for m in st.session_state.messages:
@@ -607,7 +645,6 @@ with tab[1]:
             st.session_state.unread = 0
             st.success('Marked as read')
 
-    st.markdown('---')
 
 # --------------------------
 # Songs tab
