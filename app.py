@@ -2,9 +2,17 @@ import streamlit as st
 from pathlib import Path
 from PIL import Image
 import io
+import sqlite3
 import sqlite3 as _sqlite3
 import streamlit.components.v1 as components
 import random
+import os
+import json
+import datetime
+import base64
+import hashlib
+import hmac
+
 # reportlab is optional — not all environments have it installed
 HAVE_REPORTLAB = True
 try:
@@ -13,79 +21,26 @@ try:
     from reportlab.lib.units import mm
 except Exception:
     HAVE_REPORTLAB = False
-import json
-import datetime
-import os
-import sqlite3
 
-# Page config
-st.set_page_config(page_title="For Lina 💖", page_icon="❤️", layout="centered")
 
-# Styles
-RED_BG = "#ffedf0"
-ACCENT = "#d81b60"  # deep pink/red
-
-st.markdown(f"""<style>
-body {{background: linear-gradient(180deg, #fff 0%, {RED_BG} 100%); font-family: 'Helvetica Neue', Arial, sans-serif;}}
-.main {{background: transparent;}}
-.stApp {{padding-top: 10px;}}
-.header-wrap {{text-align:center; padding:18px 8px; background: linear-gradient(90deg, rgba(216,27,96,0.06), rgba(216,27,96,0.02)); border-radius:12px; margin-bottom:18px}}
-h1 {{color: {ACCENT}; font-family: 'Georgia', serif; font-size:44px; margin:0}}
-h3 {{margin-top:4px}}
-.love-text {{font-size:18px; color:#7a102a; line-height:1.6}}
-.btn-red {{background:{ACCENT}; color:white; padding:10px 18px; border-radius:12px; border:none}}
-.btn-red:hover {{opacity:0.95}}
-.message-bubble {{background:#fff0f3; color:#2b2b2b; border-radius:12px; padding:12px; margin:10px 0; max-width:78%;}}
-.message-bubble .meta {{color:#6a6a6a; font-size:12px}}
-.message-left {{margin-right:auto; text-align:left}}
-.message-right {{margin-left:auto; text-align:right; background: linear-gradient(180deg,#ffd9e6,#ffb3d1);}}
-.heart-decor {{font-size:22px; color:#d81b60; margin:0 6px}}
-.timestamp {{font-size:11px; color:#8a6a6a;}}
-.download-btn {{background:#c2185b; color:white}}
-/* layout */
-.container {{max-width:900px; margin:0 auto;}}
-.message-row {{display:flex; flex-direction:column; gap:6px}}
-.avatar {{display:inline-block; width:20px; height:20px; margin-right:8px}}
-.message-bubble .body {{margin-top:8px; color:#2b2b2b}}
-/* richer visual touches */
-.stApp {{background-image: radial-gradient(rgba(216,27,96,0.03) 1px, transparent 1px); background-size: 20px 20px;}}
-.message-bubble {{box-shadow: 0 6px 18px rgba(20,10,20,0.06);}}
-.message-right {{align-self:flex-end; background: linear-gradient(180deg,#ffd9e6,#ffb3d1);}}
-.message-left {{align-self:flex-start; background: linear-gradient(180deg,#fff,#fff6f8);}}
-.meta-row {{display:flex; align-items:center; gap:8px;}}
-.meta-name {{font-weight:600; color:#6a1330}}
-.meta-time {{font-size:11px; color:#8a6a6a}}
-/* responsive tweaks */
-@media (max-width: 768px) {{
-    .message-bubble {{max-width:92%;}}
-}}
-</style>
-""", unsafe_allow_html=True)
-
-# Basic header
-st.markdown("<div class='header-wrap'>", unsafe_allow_html=True)
-st.markdown("<h1>For Lina <span class='heart-decor'>❤️</span></h1>", unsafe_allow_html=True)
-st.markdown("<h3 style='color:#b71c46'>My beautiful cutie pie <span class='heart-decor'>💞</span></h3>", unsafe_allow_html=True)
-st.markdown("</div>", unsafe_allow_html=True)
-
-# Top tabs (Play, Journal, Map removed)
-# Users / Forced login
+# Users storage helpers
 USERS_FILE = Path('users.json')
 
 def load_users():
-    if USERS_FILE.exists():
-        try:
+    try:
+        if USERS_FILE.exists():
             return json.loads(USERS_FILE.read_text(encoding='utf-8'))
-        except Exception:
-            return {}
+    except Exception:
+        pass
     return {}
 
 
-def save_users(d: dict):
+def save_users(users_dict: dict):
     try:
-        USERS_FILE.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding='utf-8')
+        USERS_FILE.write_text(json.dumps(users_dict, ensure_ascii=False, indent=2), encoding='utf-8')
+        return True
     except Exception:
-        pass
+        return False
 
 
 def init_users_if_missing():
@@ -112,8 +67,32 @@ if not st.session_state.get('auth_user'):
     else:
         username = st.text_input('Username', key='login_user')
     password = st.text_input('Password', type='password', key='login_pwd')
+    def verify_password(password: str, stored: str) -> bool:
+        try:
+            if not isinstance(stored, str):
+                return False
+            if not stored.startswith('pbkdf2$'):
+                return False
+            parts = stored.split('$')
+            if len(parts) != 4:
+                return False
+            iterations = int(parts[1])
+            salt = base64.b64decode(parts[2])
+            dk = base64.b64decode(parts[3])
+            test = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, iterations)
+            return hmac.compare_digest(test, dk)
+        except Exception:
+            return False
+
     if st.button('Login'):
-        if users and users.get(username) == password:
+        stored = users.get(username) if users else None
+        ok = False
+        if stored:
+            if isinstance(stored, str) and stored.startswith('pbkdf2$'):
+                ok = verify_password(password, stored)
+            else:
+                ok = (stored == password)
+        if ok:
             st.session_state['auth_user'] = username
             st.success(f'Logged in as {username}')
             try:
@@ -136,7 +115,7 @@ with st.sidebar:
             pass
 
 # Top tabs (Play, Journal, Map removed)
-tab = st.tabs(["Home", "Messages", "Songs", "Letters", "Countdowns", "Private"])
+tab = st.tabs(["Home", "Messages", "Songs", "Call", "Letters", "Countdowns", "Private", "Feeling"])
 
 # Messages storage
 MESSAGES_FILE = Path("messages.json")
@@ -536,6 +515,54 @@ with tab[1]:
         st.write('Attach image(s) (optional)')
         img_upload = st.file_uploader('', type=['png','jpg','jpeg','gif'], accept_multiple_files=True, key=f'msg_images_{composer_pos}')
         msg_text = st.text_area('Message', height=120, key='composer_text')
+
+        # Voice input: inject a small Web Speech API control (browser must support it)
+        try:
+            js_html = """
+            <div style='margin-top:8px; margin-bottom:8px; text-align:left;'>
+              <button id='start_rec' style='padding:8px;border-radius:8px;'>Start voice</button>
+              <button id='stop_rec' style='padding:8px;border-radius:8px;margin-left:6px;'>Stop</button>
+              <label style='margin-left:12px; font-size:13px; color:#6a1330;'>Transcription will appear in the message box.</label>
+              <script>
+                (function(){
+                  const start = document.getElementById('start_rec');
+                  const stop = document.getElementById('stop_rec');
+                  let recognition = null;
+                  if('webkitSpeechRecognition' in window || 'SpeechRecognition' in window){
+                    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+                    recognition = new SR();
+                    recognition.lang = 'en-US';
+                    recognition.interimResults = true;
+                    recognition.continuous = true;
+                    recognition.onresult = function(e){
+                      let interim = '';
+                      let final = '';
+                      for(let i=e.resultIndex;i<e.results.length;i++){
+                        if(e.results[i].isFinal) final += e.results[i][0].transcript;
+                        else interim += e.results[i][0].transcript;
+                      }
+                      // find textarea by placeholder or name
+                      const ta = Array.from(document.querySelectorAll('textarea')).find(t=>t.placeholder && t.placeholder.toLowerCase().includes('message')) || document.querySelector('textarea');
+                      if(ta){
+                        ta.value = (ta.value||'') + final + interim;
+                        ta.dispatchEvent(new Event('input', {bubbles:true}));
+                      }
+                    };
+                  } else {
+                    start.disabled = true; stop.disabled = true;
+                    const p = document.createElement('span'); p.innerText=' (Voice not supported in this browser)'; p.style.color='#a00'; start.parentNode.appendChild(p);
+                  }
+                  start.addEventListener('click', ()=>{ if(recognition) recognition.start(); start.disabled=true; stop.disabled=false; });
+                  stop.addEventListener('click', ()=>{ if(recognition) recognition.stop(); start.disabled=false; stop.disabled=true; });
+                })();
+              </script>
+            </div>
+            """
+            components.html(js_html, height=90)
+        except Exception:
+            pass
+
+        # Send handler
         if st.button('Send', key=f'send_btn_{composer_pos}') and (msg_text.strip() or (img_upload and len(img_upload) > 0)):
             recipient = 'Lina' if current_user == 'Youssef' else 'Youssef'
             entry = {
@@ -596,7 +623,24 @@ with tab[1]:
     st.markdown('---')
 
     # Messages container
-    st.markdown("<div style='max-height:520px; overflow:auto; padding:8px; border-radius:12px; background:linear-gradient(180deg,#fff,#fff6f8)'>", unsafe_allow_html=True)
+    # Chat styling (dark theme) — matches the screenshot with left/right bubbles, avatars and timestamps
+    chat_css = """
+    <style>
+    .chat-container{max-height:520px; overflow:auto; padding:12px; border-radius:12px; background:#0b0c0e; color:#fff;}
+    .message-row{display:flex; margin-bottom:12px; align-items:flex-start;}
+    .message-left{justify-content:flex-start;}
+    .message-right{justify-content:flex-end;}
+    .message-bubble{max-width:68%; padding:10px 14px; border-radius:14px; background:#16181b; color:#fff; box-shadow: 0 4px 12px rgba(0,0,0,0.4);}
+    .message-bubble.message-right{background:linear-gradient(135deg,#6a0120,#b30f3d); border-radius:14px 14px 4px 14px;}
+    .meta-row{display:flex; align-items:center; gap:8px; margin-bottom:6px; font-size:14px; color:#ffd6dd;}
+    .avatar{font-size:16px; margin-right:6px;}
+    .meta-name{font-weight:700;}
+    .meta-time{font-size:12px; color:#f0d7db; opacity:0.9; margin-left:6px;}
+    .body{white-space:pre-wrap; font-size:15px; color:#fff;}
+    img.chat-thumb{max-width:100%; border-radius:10px; margin-top:8px; box-shadow:0 6px 18px rgba(0,0,0,0.3);}
+    </style>
+    """
+    st.markdown(chat_css + "<div class='chat-container'>", unsafe_allow_html=True)
 
     if st.session_state.get('unread'):
         st.info(f"{current_user} has {st.session_state.get('unread')} unread message(s)")
@@ -609,47 +653,51 @@ with tab[1]:
     for m in msgs:
         sender_name = m.get('from', '')
         is_me = (sender_name == current_user)
-        side_class = 'message-right' if is_me else 'message-left'
         try:
             ts = datetime.datetime.fromisoformat(m.get('time'))
             ts_str = ts.strftime('%b %d %H:%M')
         except Exception:
             ts_str = m.get('time', '')
+
         avatar = '💖' if sender_name.lower().startswith('l') else '💌'
+        container_class = 'message-row message-right' if is_me else 'message-row message-left'
+        bubble_class = 'message-bubble message-right' if is_me else 'message-bubble'
+
+        # Build the message bubble HTML
         html = f"""
-        <div class='message-row'>
-          <div class='message-bubble {side_class}'>
-            <div class='meta-row'><span class='avatar'>{avatar}</span><span class='meta-name'>{sender_name}</span><span class='meta-time'>&nbsp;{ts_str}</span></div>
+        <div class="{container_class}">
+          <div class="{bubble_class}">
+            <div class='meta-row'><span class='avatar'>{avatar}</span><span class='meta-name'>{sender_name}</span><span class='meta-time'>{ts_str}</span></div>
             <div class='body'>{m.get('text','')}</div>
-          </div>
-        </div>
         """
-        st.markdown(html, unsafe_allow_html=True)
-        try:
-            imgs = m.get('images', []) or []
-            for im in imgs:
-                # support both old string format and new dict format
+
+        # Inline images into the bubble when available
+        imgs = m.get('images', []) or []
+        for im in imgs:
+            try:
                 if isinstance(im, str):
                     p = Path('message_media') / im
                     thumb = Path('message_media') / f"thumb_{im}.png"
                 else:
                     p = Path('message_media') / im.get('file')
                     thumb = Path('message_media') / (im.get('thumb') or f"thumb_{im.get('file')}.png")
+
+                src = None
                 if thumb.exists():
-                    try:
-                        st.image(thumb.read_bytes(), width=360)
-                    except Exception:
-                        try:
-                            st.image(p.read_bytes(), width=360)
-                        except Exception:
-                            pass
+                    src = thumb.as_posix()
                 elif p.exists():
-                    try:
-                        st.image(p.read_bytes(), width=360)
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+                    src = p.as_posix()
+
+                if src:
+                    # Use file URL so browser can load the local image
+                    html += f"<img class='chat-thumb' src='file://{src}' />"
+            except Exception:
+                # ignore any image rendering issues
+                continue
+
+        html += "</div></div>"
+        st.markdown(html, unsafe_allow_html=True)
+        # images were inlined into the bubble above; no separate st.image fallback here
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -724,25 +772,41 @@ SONGS_DB = Path('songs.db')
 def init_songs_db():
     conn = _sqlite3.connect(str(SONGS_DB))
     c = conn.cursor()
+    # create table with cover_filename column (safe for new DBs)
     c.execute(
         '''CREATE TABLE IF NOT EXISTS songs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             filename TEXT UNIQUE,
             orig_name TEXT,
             uploader TEXT,
-            time TEXT
+            time TEXT,
+            cover_filename TEXT
         )'''
     )
+    # ensure legacy DBs get the new column
+    try:
+        c.execute("PRAGMA table_info(songs)")
+        cols = [r[1] for r in c.fetchall()]
+        if 'cover_filename' not in cols:
+            try:
+                c.execute('ALTER TABLE songs ADD COLUMN cover_filename TEXT')
+            except Exception:
+                pass
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
-def add_song_record(filename, orig_name, uploader):
+def add_song_record(filename, orig_name, uploader, cover_filename=None):
+    """Insert or replace a song record. cover_filename is optional and stored in the DB."""
     init_songs_db()
     conn = _sqlite3.connect(str(SONGS_DB))
     c = conn.cursor()
     try:
-        c.execute('INSERT OR REPLACE INTO songs (filename, orig_name, uploader, time) VALUES (?, ?, ?, ?)',
-                  (filename, orig_name, uploader, datetime.datetime.utcnow().isoformat()))
+        c.execute(
+            'INSERT OR REPLACE INTO songs (filename, orig_name, uploader, time, cover_filename) VALUES (?, ?, ?, ?, ?)',
+            (filename, orig_name, uploader, datetime.datetime.utcnow().isoformat(), cover_filename)
+        )
         conn.commit()
     except Exception:
         pass
@@ -752,18 +816,71 @@ def list_songs():
     init_songs_db()
     conn = _sqlite3.connect(str(SONGS_DB))
     c = conn.cursor()
-    c.execute('SELECT filename, orig_name, uploader, time FROM songs ORDER BY time DESC')
+    c.execute('SELECT filename, orig_name, uploader, time, cover_filename FROM songs ORDER BY time DESC')
     rows = c.fetchall()
     conn.close()
-    return [{'filename': r[0], 'orig_name': r[1], 'uploader': r[2], 'time': r[3]} for r in rows]
+    return [{'filename': r[0], 'orig_name': r[1], 'uploader': r[2], 'time': r[3], 'cover_filename': r[4]} for r in rows]
 
 def delete_song_record(filename):
     init_songs_db()
     conn = _sqlite3.connect(str(SONGS_DB))
     c = conn.cursor()
-    c.execute('DELETE FROM songs WHERE filename = ?', (filename,))
+    # fetch cover filename so caller can remove the cover file too
+    try:
+        c.execute('SELECT cover_filename FROM songs WHERE filename = ?', (filename,))
+        row = c.fetchone()
+        cover = row[0] if row else None
+    except Exception:
+        cover = None
+    try:
+        c.execute('DELETE FROM songs WHERE filename = ?', (filename,))
+    except Exception:
+        pass
     conn.commit()
     conn.close()
+    return cover
+
+
+def migrate_songs_to_db():
+    """Scan the songs directory and add any files that aren't recorded in the DB.
+    Tries to associate cover_ files with their audio/video by filename inclusion.
+    """
+    init_songs_db()
+    existing = set(r['filename'] for r in list_songs())
+    # map audio filename -> cover filename (if cover contains the audio filename)
+    cover_map = {}
+    try:
+        for p in SONGS_DIR.iterdir():
+            if not p.is_file():
+                continue
+            if p.name.startswith('cover_'):
+                # try to find an audio/video filename inside the cover filename
+                for q in SONGS_DIR.iterdir():
+                    if not q.is_file() or q.name.startswith('cover_'):
+                        continue
+                    if q.name in p.name:
+                        cover_map[q.name] = p.name
+                        break
+    except Exception:
+        pass
+
+    # Add any media files not yet in DB
+    try:
+        for p in SONGS_DIR.iterdir():
+            if not p.is_file():
+                continue
+            if p.name.startswith('cover_'):
+                continue
+            if p.name in existing:
+                continue
+            # determine a reasonable orig_name by stripping a leading timestamp if present
+            parts = p.name.split('_', 1)
+            orig = parts[1] if len(parts) > 1 else p.name
+            uploader = 'migrated'
+            cover = cover_map.get(p.name)
+            add_song_record(p.name, orig, uploader, cover)
+    except Exception:
+        pass
 
 with tab[2]:
     st.markdown("<h2 style='text-align:center;'>Songs</h2>", unsafe_allow_html=True)
@@ -790,12 +907,18 @@ with tab[2]:
                         (SONGS_DIR / cover_name).write_bytes(cdata)
                     except Exception:
                         cover_name = None
-                add_song_record(safe_name, f.name, uploader_name)
+                add_song_record(safe_name, f.name, uploader_name, cover_name)
                 st.success(f"Uploaded {f.name}")
             except Exception as e:
                 st.error(f"Failed to save {f.name}: {e}")
 
     st.markdown('---')
+
+    # Migrate any files sitting in the songs/ folder into the DB (one-time safe op)
+    try:
+        migrate_songs_to_db()
+    except Exception:
+        pass
 
     # List available songs (from DB)
     items = list_songs()
@@ -814,7 +937,7 @@ with tab[2]:
                 st.markdown(f"**{info.get('orig_name')}** — uploaded by *{info.get('uploader')}* on {info.get('time')}")
                 if cover_path and cover_path.exists():
                     try:
-                        st.image(str(cover_path), width=240)
+                        st.image(str(cover_path), use_column_width=True)
                     except Exception:
                         pass
                 audio_path = SONGS_DIR / info.get('filename')
@@ -836,11 +959,39 @@ with tab[2]:
                             audio_path.unlink()
                     except Exception:
                         pass
-                    delete_song_record(info.get('filename'))
+                    cover_fname = delete_song_record(info.get('filename'))
+                    # try to remove associated cover file as well
+                    if cover_fname:
+                        try:
+                            cover_path = SONGS_DIR / cover_fname
+                            if cover_path.exists():
+                                cover_path.unlink()
+                        except Exception:
+                            pass
                     try:
                         st.experimental_rerun()
                     except Exception:
                         pass
+
+    st.markdown('---')
+
+    st.markdown('---')
+
+# Call tab (simple embedded Jitsi)
+with tab[3]:
+    st.markdown("<h2 style='text-align:center;'>Call & Screen Share 📞</h2>", unsafe_allow_html=True)
+    st.write("Start a private Jitsi Meet room to call Lina and share your screen. Screen sharing works in modern browsers.")
+    # room name generator
+    default_room = f'lina_call_{datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S")}'
+    room = st.text_input('Room name (share this with Lina)', value=default_room, key='call_room')
+    start_muted = st.checkbox('Start with audio muted', value=False)
+    if st.button('Open call in embedded room') and room:
+        room_safe = room.replace(' ', '_')
+        jitsi_url = f"https://meet.jit.si/{room_safe}#config.startWithAudioMuted={str(start_muted).lower()}"
+        st.markdown("<div style='text-align:center; margin-bottom:8px;'>If screen sharing is required, desktop Chrome/Edge/Firefox work best.</div>", unsafe_allow_html=True)
+        components.html(f'''<iframe src="{jitsi_url}" allow="camera; microphone; fullscreen; display-capture; autoplay" style="width:100%; height:600px; border:0; border-radius:12px;"></iframe>''', height=620)
+    else:
+        st.info('Enter a room name and press the button to open the embedded call. You can also share the room name and join from another device.')
 
     st.markdown('---')
 
@@ -869,7 +1020,7 @@ def save_letters(items):
     except Exception:
         pass
 
-with tab[3]:
+with tab[4]:
     st.markdown("<h2 style='text-align:center;'>Love Letters Archive</h2>", unsafe_allow_html=True)
     st.write('Write letters and choose when they unlock (daily, weekly, specific date).')
     letter_text = st.text_area('Letter text')
@@ -925,7 +1076,7 @@ def save_counts(items):
     except Exception:
         pass
 
-with tab[4]:
+with tab[5]:
     st.markdown("<h2 style='text-align:center;'>Countdowns</h2>", unsafe_allow_html=True)
     name = st.text_input('Event name')
     date = st.date_input('Date')
@@ -969,6 +1120,23 @@ with tab[4]:
 # --------------------------
 PRIVATE_META = Path('private.json')
 
+# Mad Meter storage
+MAD_FILE = Path('mad_meter.json')
+
+def load_mad():
+    if MAD_FILE.exists():
+        try:
+            return json.loads(MAD_FILE.read_text(encoding='utf-8'))
+        except Exception:
+            return []
+    return []
+
+def save_mad(entries):
+    try:
+        MAD_FILE.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding='utf-8')
+    except Exception:
+        pass
+
 def load_private():
     if PRIVATE_META.exists():
         try:
@@ -983,7 +1151,7 @@ def save_private(d):
     except Exception:
         pass
 
-with tab[5]:
+with tab[6]:
     st.markdown("<h2 style='text-align:center;'>Private Space 🔒</h2>", unsafe_allow_html=True)
     # basic password protect (local only)
     pri = load_private()
@@ -1007,5 +1175,83 @@ with tab[5]:
                     st.markdown(f"- {n.get('time')}: {n.get('text')}")
             else:
                 st.error('Incorrect password')
+
+        # --------------------------
+        # Mad Meter tab
+        # --------------------------
+        with tab[7]:
+            st.markdown("<h2 style='text-align:center;'> How do you feel today? </h2>", unsafe_allow_html=True)
+            st.markdown("<div style='text-align:center; color:#7a1128;'>Share how you're feeling and what would help — this helps communicate needs calmly.</div>", unsafe_allow_html=True)
+
+            # mood slider: 0 (very mad/red) -> 50 (neutral/yellow) -> 100 (happy/green)
+            mood = st.slider('How are you feeling right now?', min_value=0, max_value=100, value=50, help='0 = very mad (red), 50 = neutral, 100 = happy')
+            # map to color and label
+            if mood <= 20:
+                mood_label = 'Very Mad'
+                mood_color = 'red'
+            elif mood <= 45:
+                mood_label = 'Upset'
+                mood_color = 'orange'
+            elif mood <= 60:
+                mood_label = 'Neutral'
+                mood_color = 'gold'
+            elif mood <= 85:
+                mood_label = 'Okay/Content'
+                mood_color = 'lightgreen'
+            else:
+                mood_label = 'Happy'
+                mood_color = 'green'
+
+            st.markdown(f"**Mood:** <span style='color:{mood_color}; font-weight:600;'>{mood_label} ({mood})</span>", unsafe_allow_html=True)
+
+            reason = st.text_area('Why do you feel this way?', placeholder='Describe briefly what happened or how you feel')
+            help_actions = st.text_area('What can your partner do to make you feel better?', placeholder='E.g. give me a hug, listen, apologize, give space, do chores, plan a date...')
+
+            # Quick suggestion chips
+            st.markdown('**Quick suggestions**: (click to append)')
+            cols = st.columns(4)
+            suggestions = ['Listen without interrupting', 'A sincere apology', 'Hug/me time', 'Help with chores', 'Plan a date', 'Give me space', 'Bring flowers', 'Write a note']
+            for i, s in enumerate(suggestions):
+                if cols[i % 4].button(s, key=f'sugg_{i}'):
+                    # append suggestion to help_actions
+                    cur = st.session_state.get('mad_help', help_actions or '')
+                    st.session_state['mad_help'] = (cur + '\n' + s).strip()
+
+            # prefer session value if user clicked quick suggestions
+            help_actions = st.session_state.get('mad_help', help_actions)
+
+            if st.button('Save mood entry'):
+                entries = load_mad()
+                entry = {
+                    'user': st.session_state.get('auth_user'),
+                    'mood': mood,
+                    'label': mood_label,
+                    'reason': reason,
+                    'help_suggested': help_actions,
+                    'time': datetime.datetime.utcnow().isoformat()
+                }
+                entries.append(entry)
+                save_mad(entries)
+                st.success('Saved your mood')
+                try:
+                    st.experimental_rerun()
+                except Exception:
+                    pass
+
+            st.markdown('---')
+            st.markdown('### Recent Mad Meter entries')
+            history = load_mad()
+            if not history:
+                st.info('No entries yet — be the first to share how you feel')
+            else:
+                for e in reversed(history[-20:]):
+                    who = e.get('user') or 'Unknown'
+                    ts = e.get('time', '')
+                    try:
+                        tsf = datetime.datetime.fromisoformat(ts).strftime('%b %d %H:%M')
+                    except Exception:
+                        tsf = ts
+                    color = 'green' if e.get('mood', 50) > 80 else ('red' if e.get('mood',50) < 30 else 'orange')
+                    st.markdown(f"- **{who}** ({tsf}) — <span style='color:{color}; font-weight:600'>{e.get('label')} ({e.get('mood')})</span><br>Reason: {e.get('reason')}<br>What helps: {e.get('help_suggested')}", unsafe_allow_html=True)
 
 # End
